@@ -2,7 +2,7 @@ import os
 import time
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-from toNotion import save_notes_to_notion  # toNotion.pyから関数をインポート
+from toNotion import save_notes_to_notion  
 
 # 環境変数の読み込み
 load_dotenv('IDPW.env')
