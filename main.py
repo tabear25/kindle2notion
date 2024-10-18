@@ -13,7 +13,7 @@ AMAZON_PASSWORD = os.getenv('AMAZON_PASSWORD')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
 
-# 環境変数の検証
+# 環境変数に必要事項が入っていなかった場合のハンドリング
 required_env_vars = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
 if not all(required_env_vars):
     raise ValueError("必要な環境変数が設定されていません。IDPW.env内に必要な情報が入力されているのかを確認してください。")
@@ -25,7 +25,6 @@ def run(playwright):
     page = context.new_page()
 
     try:
-        # AmazonのRead Notebookページに移動
         page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
 
         # ログインフォームに入力
@@ -38,9 +37,9 @@ def run(playwright):
         page.fill('input#ap_password', AMAZON_PASSWORD)
         page.click('input#signInSubmit')
 
-        # 2段階認証のためにユーザーが手動でコードを入力する時間を確保
+        # 2段階認証画面が表示された場合の対応
         print('ログインのために2段階認証コードを入力してください。60秒待機します。')
-        page.wait_for_timeout(60000)  # 60秒待機（必要に応じて調整）
+        page.wait_for_timeout(60000)  # 60秒待機
 
         # ログインが成功したか確認
         page.wait_for_load_state('networkidle')
@@ -59,7 +58,7 @@ def run(playwright):
 
             # 各々の本をクリックすることによって、そのハイライトを表示する
             book.click()
-            time.sleep(7)  # ページがロードされるのを待つ（必要に応じて調整）
+            time.sleep(7)  
 
             # 書籍名の取得を試みる
             book_title_element = page.query_selector('h3')
@@ -79,7 +78,7 @@ def run(playwright):
                 note = {
                     "title": book_title,
                     "content": content,
-                    "page": ""  # ページ情報がある場合はここに追加
+                    "page": ""  
                 }
                 notes.append(note)
 
