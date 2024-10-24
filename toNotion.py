@@ -3,7 +3,7 @@ from notion_client import Client
 
 def get_existing_contents(notion_api_key, database_id):
     """
-    Notionデータベースから既存のコンテンツを取得します。
+    Notionデータベースから既存のコンテンツを取得
     """
     notion = Client(auth=notion_api_key)
     existing_contents = set()
@@ -33,7 +33,7 @@ def get_existing_contents(notion_api_key, database_id):
 
 def save_notes_to_notion(notion_api_key, database_id, notes):
     """
-    取得したノートをNotionデータベースに保存します。既存のノートは重複しないようにします。
+    取得したノートをNotionデータベースに保存します。既存のノートは重複を避けます。
     """
     # Notionクライアントの初期化
     notion = Client(auth=notion_api_key)
