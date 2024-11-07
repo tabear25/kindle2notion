@@ -2,9 +2,6 @@ import os
 from notion_client import Client
 
 def get_existing_contents(notion_api_key, database_id):
-    """
-    Notionデータベースから既存のコンテンツを取得
-    """
     notion = Client(auth=notion_api_key)
     existing_contents = set()
     
@@ -32,17 +29,12 @@ def get_existing_contents(notion_api_key, database_id):
     return existing_contents
 
 def save_notes_to_notion(notion_api_key, database_id, notes):
-    """
-    取得したノートをNotionデータベースに保存します。既存のノートは重複を避けます。
-    """
-    # Notionクライアントの初期化
     notion = Client(auth=notion_api_key)
 
-    # 既存のノートのcontentを取得
     existing_contents = get_existing_contents(notion_api_key, database_id)
 
-    # 重複していないノートだけをNotionに追加
     for note in notes:
+
         if note['content'] in existing_contents:
             print(f"'{note['content']}' はすでに存在します。追加されません。")
             continue
@@ -81,8 +73,7 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
                 }
             }
             notion.pages.create(**new_page)
-            print(f"'{note['content']}' をNotionに追加しました。")
         except Exception as e:
-            print(f"Notionへの保存中にエラーが発生しました: {e}")
+            print(f"Notionへの保存中にエラーが発生しました。'{note['content']}'を追加する際にエラーが発生しています。: {e}")
 
     print("すべてのノートがNotionに保存されました。")
