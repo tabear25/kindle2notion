@@ -13,12 +13,6 @@ AMAZON_PASSWORD = os.getenv('AMAZON_PASSWORD')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
 
-# 環境変数を確認
-print(f"AMAZON_EMAIL: {os.getenv('AMAZON_EMAIL')}")
-print(f"AMAZON_PASSWORD: {os.getenv('AMAZON_PASSWORD')}")
-print(f"NOTION_API_KEY: {os.getenv('NOTION_API_KEY')}")
-print(f"NOTION_DATABASE_ID: {os.getenv('NOTION_DATABASE_ID')}")
-
 
 # 環境変数に必要事項が入っていなかった場合のハンドリング
 required_env_vars = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
