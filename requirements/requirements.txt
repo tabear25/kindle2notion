@@ -1,5 +1,4 @@
+###### Requirements without Version Specifiers ######
 python-dotenv
 playwright
 notion-client
-os
-time
