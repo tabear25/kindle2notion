@@ -4,6 +4,7 @@ from playwright.sync_api import sync_playwright
 from toNotion import save_notes_to_notion  
 import amazon.login 
 import book_transformer
+import toNotion
 
 load_dotenv('KEYS.env')
 AMAZON_EMAIL = os.getenv('AMAZON_EMAIL')
@@ -31,6 +32,5 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         notes = run(p)
 
-        # Notionに保存
-        save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
+        toNotion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
         print("Notionへの保存が完了しました。")

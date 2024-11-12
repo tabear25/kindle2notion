@@ -9,7 +9,6 @@ def perform_login(page, email, password):
     page.fill('input#ap_password', password)
     page.click('input#signInSubmit')
 
-    # 2段階認証の対応
     print('ログインのために2段階認証コードを入力してください。60秒待機します。')
     page.wait_for_timeout(60000)
 
