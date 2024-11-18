@@ -65,7 +65,7 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
                         "rich_text": [
                             {
                                 "text": {
-                                    "content": note.get('page', '')  # 'page'がない場合は空文字
+                                    "content": note.get('page', '')  
                                 }
                             }
                         ]
@@ -75,5 +75,3 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
             notion.pages.create(**new_page)
         except Exception as e:
             print(f"Notionへの保存中にエラーが発生しました。'{note['content']}'を追加する際にエラーが発生しています。: {e}")
-
-    print("すべてのノートがNotionに保存されました。")

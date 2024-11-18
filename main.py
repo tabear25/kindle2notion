@@ -5,6 +5,7 @@ from toNotion import save_notes_to_notion
 import amazon.login 
 import book_transformer
 import toNotion
+from toNotion.toNotion import save_notes_to_notion
 
 load_dotenv('KEYS.env')
 AMAZON_EMAIL = os.getenv('AMAZON_EMAIL')
