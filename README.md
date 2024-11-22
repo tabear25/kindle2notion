@@ -57,7 +57,7 @@ Kindleのハイライトを取得し、NotionのDBに格納するシステムで
     ```
     
     
-### 2. 実行する（Run the Script）**
+### 2. 実行する（Run the Script）
    - 全ての設定が完了したら、`kindle2notion`でスクリプトをrunします。
    ```
    python main.py
