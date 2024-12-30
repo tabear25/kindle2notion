@@ -24,19 +24,17 @@ def get_existing_contents(notion_api_key, database_id):
             else:
                 break
     except Exception as e:
-        print(f"Notionから既存のコンテンツを取得中にエラーが発生しました: {e}")
+        print(f"Notionから既存のコンテンツを取得中にエラー発生: {e}")
     
     return existing_contents
 
 def save_notes_to_notion(notion_api_key, database_id, notes):
     notion = Client(auth=notion_api_key)
-
     existing_contents = get_existing_contents(notion_api_key, database_id)
 
     for note in notes:
-
         if note['content'] in existing_contents:
-            print(f"'{note['content']}' はすでに存在します。追加されません。")
+            print(f"'{note['content']}' はすでに存在するからスキップしとくわ。")
             continue
 
         try:
@@ -65,7 +63,7 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
                         "rich_text": [
                             {
                                 "text": {
-                                    "content": note.get('page', '')  
+                                    "content": note.get('page', '')
                                 }
                             }
                         ]
@@ -73,5 +71,6 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
                 }
             }
             notion.pages.create(**new_page)
+            print(f"'{note['content']}' をNotionに追加したで。")
         except Exception as e:
-            print(f"Notionへの保存中にエラーが発生しました。'{note['content']}'を追加する際にエラーが発生しています。: {e}")
+            print(f"Notionへの保存中にエラーが発生。'{note['content']}' を追加できんかった: {e}")
