@@ -2,11 +2,11 @@ import os
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 import amazon.login 
-import book_transformer
+from book_transformer import transformer
 import notion
-from notion.toNotion import save_notes_to_notion
+from notion import toNotion
 
-load_dotenv('KEYS.env')
+load_dotenv('config/KEYS.env')
 AMAZON_EMAIL = os.getenv('AMAZON_EMAIL')
 AMAZON_PASSWORD = os.getenv('AMAZON_PASSWORD')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
@@ -23,7 +23,7 @@ def run(playwright):
 
     try:
         amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD)
-        notes = book_transformer.extract_notes(page)
+        notes = transformer.extract_notes(page)
         return notes
     finally:
         browser.close()
@@ -32,5 +32,5 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         notes = run(p)
 
-        notion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
+        toNotion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
         print("Notionへの保存が完了しました。")
