@@ -9,8 +9,8 @@ def perform_login(page, email, password):
     page.fill('input#ap_password', password)
     page.click('input#signInSubmit')
 
-    print('ログインのために2段階認証コードを入力してください。60秒待機します。')
-    page.wait_for_timeout(60000)
+    print('ログインのために2段階認証コードを入力してください。45秒待機します。')
+    page.wait_for_timeout(45000)
 
     page.wait_for_load_state('networkidle')
     if not page.url.startswith("https://read.amazon.co.jp/notebook"):
