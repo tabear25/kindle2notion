@@ -2,3 +2,10 @@
 python-dotenv
 playwright
 notion-client
+
+###### Additional Dependencies ######
+amazon
+book-transformer
+notion_client
+re
+time
