@@ -1,7 +1,7 @@
 import time
 
 def perform_login(page, email, password):
-    page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
+    page.goto("https://read.amazon.co.jp/notebook", timeout=30000)
     page.fill('input#ap_email', email)
     page.click('input#continue')
     page.wait_for_selector('input#ap_password', timeout=10000)
