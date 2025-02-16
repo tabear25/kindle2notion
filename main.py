@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 import amazon.login 
 from book_transformer import transformer
-import notion
 from notion import toNotion
 
 load_dotenv('config/KEYS.env')
