@@ -9,7 +9,7 @@ TWO_FACTOR_WAIT_MS = 45000
 LOAD_TIMEOUT = 30000  
 
 def perform_login(page, email, password):
-    ♯ ログイン処理
+    # ログイン処理
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
     page.fill(EMAIL_SELECTOR, email)
     page.click(CONTINUE_SELECTOR)
