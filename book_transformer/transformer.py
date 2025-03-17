@@ -6,10 +6,10 @@ def extract_notes(page):
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
 
     notes = []  
-    for index, book in enumerate(each_books):
+    for index, book in enumerate(each_books[:3]):
         text_array = []
         book.click()
-        time.sleep(7)  
+        time.sleep(5)  
 
         book_title_element = page.query_selector('h3')
         if book_title_element:
