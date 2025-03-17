@@ -1,4 +1,3 @@
-import time
 
 AMAZON_NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
 EMAIL_SELECTOR = 'input#ap_email'
@@ -6,10 +5,10 @@ CONTINUE_SELECTOR = 'input#continue'
 PASSWORD_SELECTOR = 'input#ap_password'
 SIGNIN_SELECTOR = 'input#signInSubmit'
 IDLE = 'networkidle'
-TWO_FACTOR_WAIT_MS = 45000  
+TWO_FACTOR_WAIT_MS = 30000  
 LOAD_TIMEOUT = 30000  
 
-def perform_login(page, email, password):
+async def perform_login(page, email, password):
     # ログイン処理
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
     page.fill(EMAIL_SELECTOR, email)
@@ -19,7 +18,7 @@ def perform_login(page, email, password):
     page.click(SIGNIN_SELECTOR)
     
     # 2段階認証
-    print('ログインのために2段階認証コードを入力してください。45秒待機します。')
+    print('ログインのために2段階認証コードを入力してください。30秒待機します。')
     page.wait_for_timeout(TWO_FACTOR_WAIT_MS)
     page.wait_for_load_state(IDLE)
     

@@ -1,4 +1,7 @@
 import os
+import asyncio
+import nest_asyncio
+nest_asyncio.apply()
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 import amazon.login 
@@ -21,15 +24,23 @@ def run(playwright):
     page = context.new_page()
 
     try:
-        amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD)
-        notes = transformer.extract_notes(page)
-        return notes
+        asyncio.run(amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD))
+        context.storage_state(path="storage_state.json")
     finally:
         browser.close()
+
+    headless_browser = playwright.chromium.launch(headless=True)
+    headless_context = headless_browser.new_context(storage_state="storage_state.json")
+    headless_page = headless_context.new_page()
+
+    try:
+        notes = transformer.extract_notes(headless_page)
+        return notes
+    finally:
+        headless_browser.close()
 
 if __name__ == '__main__':
     with sync_playwright() as p:
         notes = run(p)
-
         toNotion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
         print("Notionへの保存が完了しました。")
