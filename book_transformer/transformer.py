@@ -6,7 +6,8 @@ def extract_notes(page):
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
 
     notes = []  
-    for index, book in enumerate(each_books[:3]):
+    # ループの最初から3冊だけを取得
+    for index, book in enumerate(each_books):
         text_array = []
         book.click()
         time.sleep(5)  
@@ -25,9 +26,9 @@ def extract_notes(page):
             page_info_element = highlight.query_selector('#annotationHighlightHeader')
             if page_info_element:
                 page_info_text = page_info_element.text_content().strip()
-                match = re.search(r"[:：]\s*(\d{1,5})", page_info_text)
+                match = re.search(r"\d+", page_info_text)
                 if match:
-                    page_number = match.group(1)
+                    page_number = match.group(0)
                 else:
                     page_number = ""
             else:

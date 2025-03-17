@@ -34,17 +34,12 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
     existing_contents = get_existing_contents(notion_api_key, database_id)
 
     for note in notes:
-
         if note['content'] in existing_contents:
             print(f"'{note['content']}' はすでに存在します。追加されません。")
             continue
         
-        page_number_value = note.get('page', '')
-        if page_number_value and page_number_value.isdigit():
-            page_number = int(page_number_value)
-        else:
-            page_number = None
-
+        page_number_str = note.get('page', '')
+        
         try:
             new_page = {
                 "parent": {"database_id": database_id},
@@ -68,7 +63,13 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
                         ]
                     },
                     "Page": {
-                        "number": page_number
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": page_number_str
+                                }
+                            }
+                        ]
                     }
                 }
             }

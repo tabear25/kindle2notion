@@ -1,4 +1,7 @@
 import os
+import asyncio
+import nest_asyncio
+nest_asyncio.apply()
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 import amazon.login 
@@ -21,12 +24,11 @@ def run(playwright):
     page = context.new_page()
 
     try:
-        amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD)
+        asyncio.run(amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD))
         context.storage_state(path="storage_state.json")
     finally:
         browser.close()
 
-    # ヘッドレスで後続処理
     headless_browser = playwright.chromium.launch(headless=True)
     headless_context = headless_browser.new_context(storage_state="storage_state.json")
     headless_page = headless_context.new_page()
