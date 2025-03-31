@@ -3,7 +3,7 @@ Kindleのハイライトを取得し、NotionのDBに格納するシステムで
 
 # 前提条件（Prerequisites）
 ハイライトを取得する[Kindleメモとハイライト](https://read.amazon.co.jp/notebook)は日本語のサイトです。
-Amazonアカウントの言語設定は動作自体には影響しません。アマゾンアカウントを作成した国は日本である必要があります。
+Amazonアカウントの言語設定は動作自体には影響しませんが、アマゾンアカウントを作成した国は日本である必要があります。
 
 ## 必要なライブラリ（Required Libraries）
 `requirements.txt`にまとめてあるので全てインストールしてください
