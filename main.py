@@ -19,7 +19,7 @@ if not all(required_env_vars):
     raise ValueError("必要な環境変数が設定されていません。KEYS.env内に必要な情報が入力されているのかを確認してください。")
 
 def run(playwright):
-    browser = playwright.chromium.launch(headless=False)
+    browser = playwright.chromium.launch(headless=True)
     context = browser.new_context()
     page = context.new_page()
 

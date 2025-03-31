@@ -6,8 +6,12 @@ def extract_notes(page):
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
 
     notes = []  
-    # ループの最初から3冊だけを取得
-    for index, book in enumerate(each_books):
+    """
+    enumerate(each_books[:3])、各書籍のハイライトを取得するために、何冊分の書籍を取得するかを指定します。
+    enumerate(each_books[:3])は、最初の3冊の書籍を取得することを意味します。
+    もし全ての書籍を取得したい場合は、enumerate(each_books)としてください。
+    """
+    for index, book in enumerate(each_books[:3]):
         text_array = []
         book.click()
         time.sleep(5)  
