@@ -35,7 +35,6 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
 
     for note in notes:
         if note['content'] in existing_contents:
-            print(f"'{note['content']}' はすでに存在します。追加されません。")
             continue
         
         page_number_str = note.get('page', '')

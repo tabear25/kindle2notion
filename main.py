@@ -4,19 +4,27 @@ import nest_asyncio
 nest_asyncio.apply()
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-import amazon.login 
+import amazon.login
 from book_transformer import transformer
 from notion import toNotion
+from gui_utils.gui import show_popup_message
+from pathlib import Path
 
-load_dotenv('config/KEYS.env')
+# pathの読み込み
+env_path = Path(__file__).resolve().parent / 'config' / 'KEYS.env'
+load_dotenv(dotenv_path=env_path)
+
+# 環境変数の読み込み
 AMAZON_EMAIL = os.getenv('AMAZON_EMAIL')
 AMAZON_PASSWORD = os.getenv('AMAZON_PASSWORD')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
 
 required_env_vars = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
-if not all(required_env_vars):
-    raise ValueError("必要な環境変数が設定されていません。KEYS.env内に必要な情報が入力されているのかを確認してください。")
+missing = [k for k, v in enumerate(required_env_vars) if not v]
+if missing:
+    raise ValueError("必要な環境変数が設定されていません: {', '.join(missing)}")
+
 
 def run(playwright):
     browser = playwright.chromium.launch(headless=True)
@@ -43,4 +51,4 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         notes = run(p)
         toNotion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
-        print("Notionへの保存が完了しました。")
+        show_popup_message("Notionへの保存が完了しました。", title="完了")
