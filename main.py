@@ -10,11 +10,9 @@ from notion import toNotion
 from gui_utils.gui import show_popup_message
 from pathlib import Path
 
-# pathの読み込み
 env_path = Path(__file__).resolve().parent / 'config' / 'KEYS.env'
 load_dotenv(dotenv_path=env_path)
 
-# 環境変数の読み込み
 AMAZON_EMAIL = os.getenv('AMAZON_EMAIL')
 AMAZON_PASSWORD = os.getenv('AMAZON_PASSWORD')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY')
