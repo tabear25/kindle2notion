@@ -9,3 +9,4 @@ book-transformer
 notion_client
 re
 time
+tqdm
