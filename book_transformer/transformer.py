@@ -15,16 +15,14 @@ def extract_notes(page, max_books: int = 3):
     """
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
-    total_books = len(each_books)
-    books_to_process = each_books[:limit] if limit else each_books
 
-    notes = []  
+    notes = []   
     """
     enumerate(each_books[:max_books])、各書籍のハイライトを取得するために、何冊分の書籍を取得するかを指定します。
     enumerate(each_books[:max_books])は、最初の指定された冊数の書籍を取得することを意味します。
     もし全ての書籍を取得したい場合は、enumerate(each_books)としてください。
     """
-    for index, book in enumerate(each_books[:3]):
+    for index, book in enumerate(tqdm(each_books[:max_books], desc="Books")):
         text_array = []
         book.click()
         time.sleep(5)  

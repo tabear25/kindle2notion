@@ -8,7 +8,6 @@ def show_popup_message(message: str, title = "完了通知") -> None:
     root = tk.Tk()
     root.withdraw()  
     messagebox.showinfo(title, message)
-    root.destroy()
 
 
 def ask_book_limit(default: int = 3) -> int:
