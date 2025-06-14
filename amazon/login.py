@@ -1,4 +1,3 @@
-import asyncio
 import tkinter as tk
 
 AMAZON_NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
@@ -39,7 +38,7 @@ def prompt_two_factor_code():
     root.destroy()
     return code
 
-async def perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD):
+def perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD):
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
     page.fill(EMAIL_SELECTOR, AMAZON_EMAIL)
     page.click(CONTINUE_SELECTOR)

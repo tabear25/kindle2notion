@@ -1,5 +1,6 @@
 import os
 from notion_client import Client
+from tqdm import tqdm
 
 def get_existing_contents(notion_api_key, database_id):
     notion = Client(auth=notion_api_key)
@@ -33,7 +34,7 @@ def save_notes_to_notion(notion_api_key, database_id, notes):
 
     existing_contents = get_existing_contents(notion_api_key, database_id)
 
-    for note in notes:
+    for note in tqdm(notes, desc="Notion"):
         if note['content'] in existing_contents:
             continue
         
