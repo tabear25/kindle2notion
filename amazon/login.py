@@ -1,4 +1,3 @@
-import asyncio
 import tkinter as tk
 
 AMAZON_NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
@@ -39,18 +38,21 @@ def prompt_two_factor_code():
     root.destroy()
     return code
 
-async def perform_login(page, email, password):
+def perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD):
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
-    page.fill(EMAIL_SELECTOR, email)
+    page.fill(EMAIL_SELECTOR, AMAZON_EMAIL)
     page.click(CONTINUE_SELECTOR)
     page.wait_for_selector(PASSWORD_SELECTOR, timeout=LOAD_TIMEOUT)
-    page.fill(PASSWORD_SELECTOR, password)
+    page.fill(PASSWORD_SELECTOR, AMAZON_PASSWORD)
     page.click(SIGNIN_SELECTOR)
     
     try:
         page.wait_for_selector(TWO_FACTOR_INPUT_SELECTOR, timeout=LOAD_TIMEOUT)
+    except RuntimeError as re:
+        print("RuntimeErrorを検出しましたが無視して継続します。:", re)
+        pass
     except Exception as e:
-        raise Exception("2段階認証画面への遷移に失敗しました。")
+        raise Exception("2段階認証コード入力画面が表示されませんでした。") from e
     
     print("2段階認証コード入力用のGUIを表示します。")
     code = prompt_two_factor_code()

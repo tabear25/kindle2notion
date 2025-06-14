@@ -1,17 +1,27 @@
 import time
 import re
+from tqdm import tqdm
 
-def extract_notes(page):
+def extract_notes(page, max_books: int = 3):
+    """Extract highlights from Kindle Notebook.
+
+    Parameters
+    ----------
+    page : playwright.sync_api.Page
+        Logged-in page instance.
+    max_books : int, optional
+        Number of books to extract, by default 3.
+    """
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
 
     notes = []  
     """
-    enumerate(each_books[:3])、各書籍のハイライトを取得するために、何冊分の書籍を取得するかを指定します。
-    enumerate(each_books[:3])は、最初の3冊の書籍を取得することを意味します。
+    enumerate(each_books[:max_books])、各書籍のハイライトを取得するために、何冊分の書籍を取得するかを指定します。
+    enumerate(each_books[:max_books])は、最初の指定された冊数の書籍を取得することを意味します。
     もし全ての書籍を取得したい場合は、enumerate(each_books)としてください。
     """
-    for index, book in enumerate(each_books[:3]):
+    for index, book in enumerate(tqdm(each_books[:max_books], desc="Books")):
         text_array = []
         book.click()
         time.sleep(5)  
