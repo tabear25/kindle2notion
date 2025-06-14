@@ -1,9 +1,12 @@
+from tqdm import tqdm
 import time
 import re
 
 def extract_notes(page):
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
+    total_books = len(each_books)
+    books_to_process = each_books[:limit] if limit else each_books
 
     notes = []  
     """
@@ -11,7 +14,7 @@ def extract_notes(page):
     enumerate(each_books[:3])は、最初の3冊の書籍を取得することを意味します。
     もし全ての書籍を取得したい場合は、enumerate(each_books)としてください。
     """
-    for index, book in enumerate(each_books[:3]):
+    for index, book in enumerate(tqdm(books_to_process, desc="Processing Books", unit="book")):
         text_array = []
         book.click()
         time.sleep(5)  
