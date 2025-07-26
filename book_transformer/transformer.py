@@ -9,7 +9,7 @@ def extract_notes(page, max_books: int = 3):
         何冊分のハイライトを取得するか指定。デフォルトは3冊。
     """
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
-    each_books = page.query_selector_all('.kp-notebook-library-each-book')
+    each_books = page.query_selector_all('a-row kp-notebook-library-each-book a-color-base-background')
     total_books = len(each_books)
     books_to_process = each_books[:max_books] if max_books else each_books
 
