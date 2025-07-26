@@ -11,7 +11,7 @@ def extract_notes(page, max_books: int = 3):
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
     total_books = len(each_books)
-    books_to_process = each_books[:limit] if limit else each_books
+    books_to_process = each_books[:max_books] if max_books else each_books
 
     notes = []  
 

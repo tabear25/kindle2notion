@@ -16,8 +16,8 @@ Amazonアカウントの言語設定は動作自体には影響しませんが�
    - DBのフォーマットは以下の通りにしてください
    - 別で何か追加したければ4列目以降に自由に追加できますが、最初の3列は絶対このフォーマットで作成してください。
 
-   | Title  | Content | Page  |
-   |-------|------|-------|
+   | Title  | Content |
+   |-------|------|
 
 2. **Notion API（無料）を取得する**
    - [Notion API](https://www.notion.so/profile/integrations)から自分のNotion APIを作成し、控えてください
