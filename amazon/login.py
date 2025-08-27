@@ -1,5 +1,6 @@
 import tkinter as tk
 
+# ログインのブラウザ操作に必要なCSSセレクター
 AMAZON_NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
 EMAIL_SELECTOR = 'input#ap_email'
 CONTINUE_SELECTOR = 'input#continue'
