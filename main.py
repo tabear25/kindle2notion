@@ -26,7 +26,7 @@ if missing:
 
 def run(playwright, limit: int = 3):
     # ヘッドレスモードの切り替え
-    browser = playwright.chromium.launch(headless=False)
+    browser = playwright.chromium.launch(headless=True)
     context = browser.new_context()
     page = context.new_page()
 
