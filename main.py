@@ -24,7 +24,7 @@ if missing:
     raise ValueError(f"必要な環境変数が設定されていません: {', '.join(missing)}")
 
 
-def run(playwright, limit: int = 3):
+def run(playwright, limit: int = 5):
     # ヘッドレスモードの切り替え
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context()
