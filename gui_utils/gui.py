@@ -11,13 +11,13 @@ def show_popup_message(message: str, title = "完了通知") -> None:
     root.destroy()
 
 
-def ask_book_limit(default: int = 3) -> int:
+def ask_book_limit(default: int = 5) -> int:
     """GUIから取得冊数を入力させる関数
 
     Parameters
     ----------
     default : int, optional
-        入力がない場合に使用するデフォルト値, by default 3
+        入力がない場合に使用するデフォルト値, by default 5
 
     Returns
     -------
