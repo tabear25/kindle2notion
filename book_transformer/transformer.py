@@ -3,10 +3,10 @@ import time
 import re
 from tqdm import tqdm
 
-def extract_notes(page, max_books: int = 3):
+def extract_notes(page, max_books: int = 5):
     """
     max_books : int, optional
-        何冊分のハイライトを取得するか指定。デフォルトは3冊。
+        何冊分のハイライトを取得するか指定。デフォルトは5冊。
     """
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all('#kp-notebook-library .kp-notebook-library-each-book')
