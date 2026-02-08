@@ -25,7 +25,7 @@ def get_existing_contents(notion_api_key, database_id):
             else:
                 break
     except Exception as e:
-        print(f"Notionから既存のコンテンツを取得中にエラーが発生しました: {e}")
+        print(f"Notionからハイライトを取得中にエラーが発生しました: {e}")
     
     return existing_contents
 

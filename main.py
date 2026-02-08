@@ -21,7 +21,7 @@ env_names = ['AMAZON_EMAIL', 'AMAZON_PASSWORD', 'NOTION_API_KEY', 'NOTION_DATABA
 env_values = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
 missing = [name for name, val in zip(env_names, env_values) if not val]
 if missing:
-    raise ValueError(f"必要な環境変数が設定されていません: {', '.join(missing)}")
+    raise ValueError(f"必要な環境変数が設定されていません。AmazonのID/PWとNotionのAPIキーが正しく設定されているか確認してください。:Missing)")
 
 
 def run(playwright, limit: int = 5):
