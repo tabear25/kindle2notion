@@ -1,9 +1,11 @@
 import time
 import re
 
-def extract_notes(page):
+def extract_notes(page, max_books=None):
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all('.kp-notebook-library-each-book')
+    if max_books is not None:
+        each_books = each_books[:max_books]
 
     notes = []  
     # ループの最初から3冊だけを取得
