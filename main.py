@@ -1,6 +1,4 @@
 import os
-import tkinter as tk
-from tkinter import messagebox, simpledialog
 from pathlib import Path
 
 import nest_asyncio
@@ -9,6 +7,7 @@ from playwright.sync_api import sync_playwright
 
 import amazon.login
 from book_transformer import transformer
+from gui_utils.gui import prompt_book_limit
 from notion import toNotion
 
 nest_asyncio.apply()
@@ -29,40 +28,6 @@ if not all(required_env_vars):
         "Missing required environment variables. Please set AMAZON_EMAIL, AMAZON_PASSWORD, "
         "NOTION_API_KEY, and NOTION_DATABASE_ID in config/KEYS.env."
     )
-
-
-def prompt_book_limit():
-    root = tk.Tk()
-    root.withdraw()
-
-    while True:
-        value = simpledialog.askstring(
-            "Book Count",
-            "How many books do you want to scrape?\n"
-            "Enter a positive integer. Leave blank for all books.",
-            parent=root,
-        )
-
-        if value is None:
-            root.destroy()
-            raise SystemExit("Cancelled by user.")
-
-        value = value.strip()
-        if value == "":
-            root.destroy()
-            return None
-
-        if value.isdigit() and int(value) > 0:
-            root.destroy()
-            return int(value)
-
-        messagebox.showerror(
-            "Invalid Input",
-            "Please enter a positive integer, or leave blank for all books.",
-            parent=root,
-        )
-
-
 def run(playwright, max_books=None):
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context()
