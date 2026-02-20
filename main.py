@@ -1,7 +1,7 @@
 import os
-import asyncio
 import tkinter as tk
 from tkinter import messagebox, simpledialog
+from pathlib import Path
 
 import nest_asyncio
 from dotenv import load_dotenv
@@ -13,7 +13,11 @@ from notion import toNotion
 
 nest_asyncio.apply()
 
-load_dotenv("config/KEYS.env")
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / "config" / "KEYS.env"
+STORAGE_STATE_PATH = BASE_DIR / "storage_state.json"
+
+load_dotenv(ENV_PATH)
 AMAZON_EMAIL = os.getenv("AMAZON_EMAIL")
 AMAZON_PASSWORD = os.getenv("AMAZON_PASSWORD")
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
@@ -65,13 +69,13 @@ def run(playwright, max_books=None):
     page = context.new_page()
 
     try:
-        asyncio.run(amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD))
-        context.storage_state(path="storage_state.json")
+        amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD)
+        context.storage_state(path=str(STORAGE_STATE_PATH))
     finally:
         browser.close()
 
     headless_browser = playwright.chromium.launch(headless=True)
-    headless_context = headless_browser.new_context(storage_state="storage_state.json")
+    headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
     headless_page = headless_context.new_page()
 
     try:
