@@ -1,9 +1,10 @@
 # これは何（What's this?）
-Kindle のハイライトを取得し、Notion の DB に格納するシステムです。
+Kindleのハイライトを取得し、NotionのDBに格納するシステムです。
 
 # 前提条件（Prerequisites）
-ハイライトを取得する [Kindle メモとハイライト](https://read.amazon.co.jp/notebook) を利用します。  
-Amazon アカウントと Notion アカウントが必要です。
+ [Kindle メモとハイライト](https://read.amazon.co.jp/notebook) を利用します。  
+AmazonアカウントとNotionアカウントが必要です。
+このリポジトリは日本のAmazonアカウントでの利用を想定しているので、用意するAmazonアカウントは日本で作成されたものである必要があります。
 
 ## 必要なライブラリ（Required Libraries）
 `requirements/requirements.txt` にまとめてあるので、インストールしてください。
@@ -13,20 +14,20 @@ Amazon アカウントと Notion アカウントが必要です。
 ### 1. 準備（Preparation）
 1. **Notion でデータベース（=DB）を作成する**
    - Notion 上で DB を作成してください。
-   - DB のフォーマットは以下の通りにしてください。
-   - 最初の 3 列はこのフォーマットで作成してください。
+   - DBのフォーマットは以下の通りにしてください。
+   - 最初の3列はこのフォーマットで作成してください。
 
    | Title  | Content | Page  |
    |-------|------|-------|
 
 2. **Notion API（無料）を取得する**
-   - [Notion API](https://www.notion.so/profile/integrations) から Integration を作成し、API キーを控えてください。
+   - [Notion API](https://www.notion.so/profile/integrations) から Integrationを作成し、API Keyを控えてください。
 
 3. **DBID（無料）を取得する**
    - 1 で作成した DB の ID（=DBID）を取得します。
    - 共有 URL の以下部分が DBID です。
    ```
-   https://www.notion.so/<データベースID>?v=<ビューID>
+   https://www.notion.so/<DBID>?v=<ビューID>
    ```
 
 4. **Amazon アカウントの ID / PW を確認する**
@@ -60,9 +61,9 @@ Amazon アカウントと Notion アカウントが必要です。
    - 正の整数: 指定冊数だけ処理
    - 空欄: 全冊処理
    - キャンセル: 実行中止
-3. Amazon ログイン画面でログインします。
+3. Amazonへログインします。
 4. 2段階認証が表示された場合は認証を完了してください（待機時間は `amazon/login.py` の `TWO_FACTOR_WAIT_MS`）。
-5. 取得後、Notion への保存が実行されます。
+5. 取得後、Notionへの保存が実行されます。
 
 ### 注意点（Notes）
 - 既存の `Content` と同じテキストは重複登録をスキップします。
