@@ -1,3 +1,7 @@
 KEYS.env
 *.json
 /test
+__pycache__/
+*.pyc
+config/KEYS.env
+storage_state.json

@@ -1,50 +1,93 @@
 import os
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+from pathlib import Path
+
+import nest_asyncio
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
-import argparse
 
 import amazon.login
 from book_transformer import transformer
 from notion import toNotion
-from gui_utils.gui import show_popup_message, ask_book_limit
-from pathlib import Path
 
-env_path = Path(__file__).resolve().parent / 'config' / 'KEYS.env'
-load_dotenv(dotenv_path=env_path)
+nest_asyncio.apply()
 
-AMAZON_EMAIL = os.getenv('AMAZON_EMAIL')
-AMAZON_PASSWORD = os.getenv('AMAZON_PASSWORD')
-NOTION_API_KEY = os.getenv('NOTION_API_KEY')
-NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID')
+BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / "config" / "KEYS.env"
+STORAGE_STATE_PATH = BASE_DIR / "storage_state.json"
 
-env_names = ['AMAZON_EMAIL', 'AMAZON_PASSWORD', 'NOTION_API_KEY', 'NOTION_DATABASE_ID']
-env_values = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
-missing = [name for name, val in zip(env_names, env_values) if not val]
-if missing:
-    raise ValueError(f"必要な環境変数が設定されていません。AmazonのID/PWとNotionのAPIキーが正しく設定されているか確認してください。:Missing)")
+load_dotenv(ENV_PATH)
+AMAZON_EMAIL = os.getenv("AMAZON_EMAIL")
+AMAZON_PASSWORD = os.getenv("AMAZON_PASSWORD")
+NOTION_API_KEY = os.getenv("NOTION_API_KEY")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+
+required_env_vars = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
+if not all(required_env_vars):
+    raise ValueError(
+        "Missing required environment variables. Please set AMAZON_EMAIL, AMAZON_PASSWORD, "
+        "NOTION_API_KEY, and NOTION_DATABASE_ID in config/KEYS.env."
+    )
 
 
-def run(playwright, limit: int = 5):
-    # ヘッドレスモードの切り替え
-    browser = playwright.chromium.launch(headless=True)
+def prompt_book_limit():
+    root = tk.Tk()
+    root.withdraw()
+
+    while True:
+        value = simpledialog.askstring(
+            "Book Count",
+            "How many books do you want to scrape?\n"
+            "Enter a positive integer. Leave blank for all books.",
+            parent=root,
+        )
+
+        if value is None:
+            root.destroy()
+            raise SystemExit("Cancelled by user.")
+
+        value = value.strip()
+        if value == "":
+            root.destroy()
+            return None
+
+        if value.isdigit() and int(value) > 0:
+            root.destroy()
+            return int(value)
+
+        messagebox.showerror(
+            "Invalid Input",
+            "Please enter a positive integer, or leave blank for all books.",
+            parent=root,
+        )
+
+
+def run(playwright, max_books=None):
+    browser = playwright.chromium.launch(headless=False)
     context = browser.new_context()
     page = context.new_page()
 
     try:
         amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD)
-        notes = transformer.extract_notes(page, max_books=limit)
-        return notes
+        context.storage_state(path=str(STORAGE_STATE_PATH))
     finally:
         browser.close()
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Fetch Kindle highlights to Notion')
-    parser.add_argument('--limit', type=int, help='Number of books to process (overrides GUI input)')
-    args = parser.parse_args()
+    headless_browser = playwright.chromium.launch(headless=True)
+    headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
+    headless_page = headless_context.new_page()
 
-    limit = args.limit if args.limit is not None else ask_book_limit()
+    try:
+        notes = transformer.extract_notes(headless_page, max_books=max_books)
+        return notes
+    finally:
+        headless_browser.close()
 
+
+if __name__ == "__main__":
+    max_books = prompt_book_limit()
     with sync_playwright() as p:
-        notes = run(p, limit)
+        notes = run(p, max_books=max_books)
         toNotion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
-        show_popup_message("Notionへの保存が完了しました。", title="完了")
+        print("Saved notes to Notion.")

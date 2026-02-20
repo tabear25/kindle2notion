@@ -2,68 +2,70 @@
 Kindleのハイライトを取得し、NotionのDBに格納するシステムです。
 
 # 前提条件（Prerequisites）
-ハイライトを取得する[Kindleメモとハイライト](https://read.amazon.co.jp/notebook)は日本語のサイトです。
-Amazonアカウントの言語設定は動作自体には影響しませんが、アマゾンアカウントを作成した国は日本である必要があります。
+ [Kindle メモとハイライト](https://read.amazon.co.jp/notebook) を利用します。  
+AmazonアカウントとNotionアカウントが必要です。
+このリポジトリは日本のAmazonアカウントでの利用を想定しているので、用意するAmazonアカウントは日本で作成されたものである必要があります。
 
 ## 必要なライブラリ（Required Libraries）
-`requirements.txt`にまとめてあるので全てインストールしてください
+`requirements/requirements.txt` にまとめてあるので、インストールしてください。
 
 # 使い方（How to Use）
 
 ### 1. 準備（Preparation）
-1. **Notionでデータベース（=DB）を作成する**
-   - Notion上でDBを作成してください。
-   - DBのフォーマットは以下の通りにしてください
-   - 別で何か追加したければ4列目以降に自由に追加できますが、最初の3列は絶対このフォーマットで作成してください。
+1. **Notion でデータベース（=DB）を作成する**
+   - Notion 上で DB を作成してください。
+   - DBのフォーマットは以下の通りにしてください。
+   - 最初の3列はこのフォーマットで作成してください。
 
-   | Title  | Content |
-   |-------|------|
+   | Title  | Content | Page  |
+   |-------|------|-------|
 
 2. **Notion API（無料）を取得する**
-   - [Notion API](https://www.notion.so/profile/integrations)から自分のNotion APIを作成し、控えてください
-   - [参考](https://qiita.com/ulxsth/items/3434471ac91f8fa311cf)：「インテグレーションを作成する」セクションが参考になります
+   - [Notion API](https://www.notion.so/profile/integrations) から Integrationを作成し、API Keyを控えてください。
 
 3. **DBID（無料）を取得する**
-   - 1で作成したDBのID（=DBID）を取得します。
-   - DBのページで共有用URLを取得した以下の部分を控えておきます。
+   - 1 で作成した DB の ID（=DBID）を取得します。
+   - 共有 URL の以下部分が DBID です。
    ```
-   https://www.notion.so/<データベースID>?v=<ビューID>
+   https://www.notion.so/<DBID>?v=<ビューID>
    ```
-   - [参考](https://qiita.com/ulxsth/items/3434471ac91f8fa311cf)：「アクセスしたいDBのIDを確認する」セクションが参考になります
 
-4. **自分のAmazonアカウントのIDとPWを確認する**
+4. **Amazon アカウントの ID / PW を確認する**
+   - Kindle ハイライトにアクセスできるアカウント情報を使ってください。
 
-5. **自分のAmazonの2FAを有効にしているか確認する**
-   - 2FAしてあることを前提に設計してあります
-   - 設定していない人は、Google Authenticatorなどの何かしらのアプリやツールを使って設定してください。
-
-6. **環境変数ファイルを作成する**
-   - 2-4のステップで集めた情報を、環境変数ファイル（.env）に以下のフォーマットで記述してください
+5. **環境変数ファイルを作成する**
+   - `config/KEYS.env` を作成し、以下のフォーマットで記述してください。
    ```
    # AmazonアカウントのID
-    AMAZON_EMAIL=
-    # Amazonアカウントのパスワード
-    AMAZON_PASSWORD=
-    # NotionAPIキー
-    NOTION_API_KEY=
-    # NotionDBのキー
-    NOTION_DATABASE_ID=
-    ```
-    
-    
+   AMAZON_EMAIL=
+   # Amazonアカウントのパスワード
+   AMAZON_PASSWORD=
+   # Notion APIキー
+   NOTION_API_KEY=
+   # Notion DBのID
+   NOTION_DATABASE_ID=
+   ```
+
+6. **Playwright のブラウザをインストールする**
+   - 初回のみ実行してください。
+   ```
+   playwright install chromium
+   ```
+
 ### 2. 実行する（Run the Script）
-   - 全ての設定が完了したら、`kindle2notion`でスクリプトをrunします。
+1. `kindle2notion` ディレクトリで実行します。
    ```
    python main.py
    ```
-   - 二段階認証画面が表示されたら認証コードをGUIに入力してください
-   - 'main.py'の以下の部分を編集して取得する範囲を変更する
-     - デフォルトでは5冊直近読んだ5冊取得することになっています。
-   ```
-   def run(playwright, limit: int = 5):
-   ```
+2. 起動後、GUI ダイアログで「何冊分スクレイピングするか」を入力します。
+   - 正の整数: 指定冊数だけ処理
+   - 空欄: 全冊処理
+   - キャンセル: 実行中止
+3. Amazonへログインします。
+4. 2段階認証が表示された場合は認証を完了してください（待機時間は `amazon/login.py` の `TWO_FACTOR_WAIT_MS`）。
+5. 取得後、Notionへの保存が実行されます。
 
 ### 注意点（Notes）
-- 特にないと思います。
-- DBに落としたハイライトは煮るなり焼くなり好きに使うといいと思います。
-- 少しでも読書モチベの向上につながると嬉しいです。
+- 既存の `Content` と同じテキストは重複登録をスキップします。
+- セッション情報は `storage_state.json` に保存されます。
+- Amazon / Notion 側の画面構成変更で動作しなくなる可能性があります。
