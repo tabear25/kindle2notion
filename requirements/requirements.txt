@@ -3,3 +3,5 @@ playwright
 notion-client
 nest-asyncio
 tqdm
+gspread
+google-auth

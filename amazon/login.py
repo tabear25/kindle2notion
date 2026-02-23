@@ -11,7 +11,6 @@ TWO_FACTOR_SUBMIT_SELECTOR = "#auth-signin-button"
 IDLE = "networkidle"
 LOAD_TIMEOUT = 15000
 
-
 def prompt_two_factor_code():
     root = tk.Tk()
     root.geometry("300x150")
@@ -42,7 +41,6 @@ def prompt_two_factor_code():
     code = code_var.get()
     root.destroy()
     return code
-
 
 def perform_login(page, amazon_email, amazon_password):
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
