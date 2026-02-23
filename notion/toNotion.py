@@ -1,7 +1,6 @@
 from notion_client import Client
 from tqdm import tqdm
 
-
 def get_existing_contents(notion_api_key, database_id):
     notion = Client(auth=notion_api_key)
     existing_contents = set()
@@ -28,7 +27,6 @@ def get_existing_contents(notion_api_key, database_id):
         print(f"Failed to fetch existing notes from Notion: {e}")
 
     return existing_contents
-
 
 def save_notes_to_notion(notion_api_key, database_id, notes):
     notion = Client(auth=notion_api_key)

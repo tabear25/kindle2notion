@@ -1,7 +1,6 @@
 import re
 import time
 
-
 def extract_notes(page, max_books=None):
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all(".kp-notebook-library-each-book")
