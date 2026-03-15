@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 config/KEYS.env
 storage_state.json
+CODEX_KEY_CONTEXT.md

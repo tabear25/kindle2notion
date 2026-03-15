@@ -2,10 +2,10 @@ import tkinter as tk
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 AMAZON_NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
-EMAIL_SELECTOR = "input#ap_email"
-CONTINUE_SELECTOR = "input#continue"
-PASSWORD_SELECTOR = "input#ap_password"
-SIGNIN_SELECTOR = "input#signInSubmit"
+EMAIL_SELECTOR = "#ap_email_login"
+CONTINUE_SELECTOR = "#continue > span > input"
+PASSWORD_SELECTOR = "#ap_password"
+SIGNIN_SELECTOR = "#signInSubmit"
 TWO_FACTOR_INPUT_SELECTOR = "#auth-mfa-otpcode"
 TWO_FACTOR_SUBMIT_SELECTOR = "#auth-signin-button"
 IDLE = "networkidle"
@@ -57,7 +57,6 @@ def perform_login(page, amazon_email, amazon_password):
             page.fill(TWO_FACTOR_INPUT_SELECTOR, code)
             page.click(TWO_FACTOR_SUBMIT_SELECTOR)
     except PlaywrightTimeoutError:
-        # 2FA not shown in this session/account.
         pass
 
     page.wait_for_load_state(IDLE)
