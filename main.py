@@ -1,6 +1,4 @@
 import os
-import tkinter as tk
-from tkinter import messagebox, simpledialog
 from pathlib import Path
 
 import nest_asyncio
@@ -9,6 +7,7 @@ from playwright.sync_api import sync_playwright
 
 import amazon.login
 from book_transformer import transformer
+from gui_utils.gui import ask_book_limit
 from notion import toNotion
 
 nest_asyncio.apply()
@@ -57,35 +56,7 @@ if GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE_ENV:
         GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE = str(service_account_path)
 
 def prompt_book_limit():
-    root = tk.Tk()
-    root.withdraw()
-
-    while True:
-        value = simpledialog.askstring(
-            "Book Count",
-            "How many books do you want to scrape?\n"
-            "Enter a positive integer. Leave blank for all books.",
-            parent=root,
-        )
-
-        if value is None:
-            root.destroy()
-            raise SystemExit("Cancelled by user.")
-
-        value = value.strip()
-        if value == "":
-            root.destroy()
-            return None
-
-        if value.isdigit() and int(value) > 0:
-            root.destroy()
-            return int(value)
-
-        messagebox.showerror(
-            "Invalid Input",
-            "Please enter a positive integer, or leave blank for all books.",
-            parent=root,
-        )
+    return ask_book_limit()
 
 def run(playwright, max_books=None):
     browser = playwright.chromium.launch(headless=False)
