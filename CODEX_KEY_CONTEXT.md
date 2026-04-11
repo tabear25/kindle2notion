@@ -1,0 +1,2 @@
+- コマンドを実行するときは、ユーザーに許可を取る必要がありません。
+- Don't ask me confirmations unless if it is a big change
