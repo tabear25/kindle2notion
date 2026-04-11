@@ -1,4 +1,5 @@
 import os
+import threading
 from pathlib import Path
 
 import nest_asyncio
@@ -7,6 +8,7 @@ from playwright.sync_api import sync_playwright
 
 import amazon.login
 from book_transformer import transformer
+from gui_utils import gui
 from gui_utils.gui import ask_book_limit
 from notion import toNotion
 
@@ -58,7 +60,7 @@ if GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE_ENV:
 def prompt_book_limit():
     return ask_book_limit()
 
-def run(playwright, max_books=None):
+def run(playwright, max_books=None, progress_callback=None):
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context()
     page = context.new_page()
@@ -74,24 +76,40 @@ def run(playwright, max_books=None):
     headless_page = headless_context.new_page()
 
     try:
-        notes = transformer.extract_notes(headless_page, max_books=max_books)
+        notes = transformer.extract_notes(headless_page, max_books=max_books,
+                                          progress_callback=progress_callback)
         return notes
     finally:
         headless_browser.close()
 
 if __name__ == "__main__":
     max_books = prompt_book_limit()
-    with sync_playwright() as p:
-        notes = run(p, max_books=max_books)
-        toNotion.save_notes_to_notion(NOTION_API_KEY, NOTION_DATABASE_ID, notes)
-        print("Saved notes to Notion.")
-        if GOOGLE_SHEETS_ENABLED:
-            from google_sheets import toSheets
+    window = gui.ProgressWindow(total_books=max_books)
 
-            toSheets.save_notes_to_google_sheets(
-                GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
-                GOOGLE_SHEETS_SPREADSHEET_ID,
-                GOOGLE_SHEETS_WORKSHEET_NAME,
-                notes,
+    def _worker():
+        try:
+            with sync_playwright() as p:
+                notes = run(p, max_books=max_books, progress_callback=window.update)
+            toNotion.save_notes_to_notion(
+                NOTION_API_KEY, NOTION_DATABASE_ID, notes,
+                progress_callback=window.update,
             )
-            print("Saved notes to Google Sheets.")
+            print("Saved notes to Notion.")
+            if GOOGLE_SHEETS_ENABLED:
+                from google_sheets import toSheets
+
+                toSheets.save_notes_to_google_sheets(
+                    GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
+                    GOOGLE_SHEETS_SPREADSHEET_ID,
+                    GOOGLE_SHEETS_WORKSHEET_NAME,
+                    notes,
+                    progress_callback=window.update,
+                )
+                print("Saved notes to Google Sheets.")
+            window.mark_done()
+        except Exception as e:
+            window.mark_error(str(e))
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    window.run()

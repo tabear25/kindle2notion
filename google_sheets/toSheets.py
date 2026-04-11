@@ -54,7 +54,7 @@ def _get_existing_contents(worksheet):
     return {value for value in column_values[start_index:] if value.strip()}
 
 
-def save_notes_to_google_sheets(service_account_file, spreadsheet_id, worksheet_name, notes):
+def save_notes_to_google_sheets(service_account_file, spreadsheet_id, worksheet_name, notes, progress_callback=None):
     client = _build_client(service_account_file)
     spreadsheet = client.open_by_key(spreadsheet_id)
     worksheet = _get_or_create_worksheet(spreadsheet, worksheet_name)
@@ -62,7 +62,9 @@ def save_notes_to_google_sheets(service_account_file, spreadsheet_id, worksheet_
     existing_contents = _get_existing_contents(worksheet)
 
     rows_to_append = []
-    for note in tqdm(notes, desc="Sheets"):
+    for i, note in enumerate(tqdm(notes, desc="Sheets")):
+        if progress_callback:
+            progress_callback("sheets", i + 1, len(notes), note.get("title", ""))
         content = note.get("content", "")
         if not content or content in existing_contents:
             continue
