@@ -1,7 +1,7 @@
 import re
 import time
 
-def extract_notes(page, max_books=None):
+def extract_notes(page, max_books=None, progress_callback=None):
     page.goto("https://read.amazon.co.jp/notebook", timeout=60000)
     each_books = page.query_selector_all(".kp-notebook-library-each-book")
     if max_books is not None:
@@ -18,6 +18,10 @@ def extract_notes(page, max_books=None):
         else:
             book_title = f"Unknown Book {index + 1}"
             print(f"Warning: title not found for book {index + 1}.")
+
+        if progress_callback:
+            progress_callback("scrape", index + 1, len(each_books),
+                              f"「{book_title}」を取得中...")
 
         highlights = page.query_selector_all("#highlight")
 

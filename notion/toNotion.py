@@ -28,11 +28,13 @@ def get_existing_contents(notion_api_key, database_id):
 
     return existing_contents
 
-def save_notes_to_notion(notion_api_key, database_id, notes):
+def save_notes_to_notion(notion_api_key, database_id, notes, progress_callback=None):
     notion = Client(auth=notion_api_key)
     existing_contents = get_existing_contents(notion_api_key, database_id)
 
-    for note in tqdm(notes, desc="Notion"):
+    for i, note in enumerate(tqdm(notes, desc="Notion")):
+        if progress_callback:
+            progress_callback("notion", i + 1, len(notes), note.get("title", ""))
         if note["content"] in existing_contents:
             continue
 

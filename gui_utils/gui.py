@@ -1,4 +1,5 @@
 import tkinter as tk
+import tkinter.ttk as ttk
 from typing import Callable, Optional, cast
 
 WINDOW_BG = "#edf4ff"
@@ -315,6 +316,212 @@ def _show_message_dialog(
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.after(80, close_button.focus_force)
     root.mainloop()
+
+
+class ProgressWindow:
+    """Real-time progress window for the sync pipeline.
+
+    Run on the main thread via run(). Call update() or mark_done()/mark_error()
+    safely from any thread — all mutations are scheduled via root.after(0).
+    """
+
+    _PHASES: list = [
+        ("scrape", "スクレイピング"),
+        ("notion", "Notionへ保存"),
+        ("sheets", "Google Sheetsへ保存"),
+    ]
+
+    def __init__(self, total_books: Optional[int] = None) -> None:
+        self._root = _build_window("同期中...", 520, 460)
+
+        style = ttk.Style(self._root)
+        style.theme_use("default")
+        style.configure(
+            "Accent.Horizontal.TProgressbar",
+            troughcolor=SECONDARY_BG,
+            background=ACCENT,
+            thickness=10,
+        )
+
+        shell = tk.Frame(self._root, bg=WINDOW_BG, padx=22, pady=22)
+        shell.pack(fill="both", expand=True)
+
+        border = tk.Frame(shell, bg=CARD_EDGE, padx=1, pady=1)
+        border.pack(fill="both", expand=True)
+
+        card = tk.Frame(border, bg=CARD_BG)
+        card.pack(fill="both", expand=True)
+
+        # Header
+        header = tk.Frame(card, bg=HEADER_BG, padx=24, pady=18)
+        header.pack(fill="x")
+
+        tk.Label(
+            header,
+            text="SYNC IN PROGRESS",
+            bg=ACCENT_SOFT,
+            fg=ACCENT_HOVER,
+            font=(FONT_UI, 9, "bold"),
+            padx=12,
+            pady=4,
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text="Kindleハイライトを同期しています",
+            bg=HEADER_BG,
+            fg=TEXT_PRIMARY,
+            font=(FONT_UI, 16, "bold"),
+            anchor="w",
+        ).pack(anchor="w", pady=(14, 4))
+
+        tk.Label(
+            header,
+            text="進捗状況をリアルタイムで表示します",
+            bg=HEADER_BG,
+            fg=TEXT_SECONDARY,
+            font=(FONT_UI, 10),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # Phase rows
+        body = tk.Frame(card, bg=CARD_BG, padx=24, pady=16)
+        body.pack(fill="both", expand=True)
+
+        self._bars: dict = {}
+        self._count_vars: dict = {}
+        self._status_vars: dict = {}
+
+        for key, label in self._PHASES:
+            self._build_phase_row(body, key, label)
+
+        tk.Frame(card, bg=CARD_EDGE, height=1).pack(fill="x")
+
+        # Status bar
+        self._status_bar_frame = tk.Frame(card, bg=SECONDARY_BG, padx=24, pady=14)
+        self._status_bar_frame.pack(fill="x")
+
+        self._status_bar_var = tk.StringVar(value="ログインしています...")
+        self._status_bar_label = tk.Label(
+            self._status_bar_frame,
+            textvariable=self._status_bar_var,
+            bg=SECONDARY_BG,
+            fg=TEXT_SECONDARY,
+            font=(FONT_UI, 10),
+            anchor="w",
+        )
+        self._status_bar_label.pack(side="left", fill="x", expand=True)
+
+        self._root.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    def _build_phase_row(self, parent: tk.Frame, key: str, label: str) -> None:
+        row = tk.Frame(parent, bg=CARD_BG)
+        row.pack(fill="x", pady=(0, 12))
+
+        top = tk.Frame(row, bg=CARD_BG)
+        top.pack(fill="x")
+
+        tk.Label(
+            top,
+            text=label,
+            bg=CARD_BG,
+            fg=TEXT_PRIMARY,
+            font=(FONT_UI, 10, "bold"),
+            anchor="w",
+        ).pack(side="left")
+
+        count_var = tk.StringVar(value="")
+        tk.Label(
+            top,
+            textvariable=count_var,
+            bg=CARD_BG,
+            fg=TEXT_SUBTLE,
+            font=(FONT_UI, 9),
+            anchor="e",
+        ).pack(side="right")
+        self._count_vars[key] = count_var
+
+        bar = ttk.Progressbar(
+            row,
+            orient="horizontal",
+            mode="determinate",
+            style="Accent.Horizontal.TProgressbar",
+        )
+        bar.pack(fill="x", pady=(6, 4))
+        self._bars[key] = bar
+
+        status_var = tk.StringVar(value="")
+        tk.Label(
+            row,
+            textvariable=status_var,
+            bg=CARD_BG,
+            fg=TEXT_SUBTLE,
+            font=(FONT_UI, 9),
+            anchor="w",
+            wraplength=440,
+        ).pack(fill="x")
+        self._status_vars[key] = status_var
+
+    def update(self, phase: str, current: int, total: int, message: str) -> None:
+        """Thread-safe. Schedule a GUI update from the worker thread."""
+        self._root.after(0, lambda: self._apply(phase, current, total, message))
+
+    def mark_done(self) -> None:
+        """Thread-safe. Show completion state."""
+        self._root.after(0, self._show_done)
+
+    def mark_error(self, message: str) -> None:
+        """Thread-safe. Show error state."""
+        self._root.after(0, lambda: self._show_error(message))
+
+    def run(self) -> None:
+        """Block on mainloop(). Must be called from the main thread."""
+        self._root.mainloop()
+
+    def _apply(self, phase: str, current: int, total: int, message: str) -> None:
+        if phase not in self._bars:
+            return
+        if total > 0:
+            self._bars[phase]["value"] = (current / total) * 100
+            self._count_vars[phase].set(f"{current} / {total}")
+        self._status_vars[phase].set(message)
+        self._status_bar_var.set(message)
+
+    def _show_done(self) -> None:
+        for bar in self._bars.values():
+            bar["value"] = 100
+        self._status_bar_frame.configure(bg=ACCENT_SOFT)
+        self._status_bar_label.configure(bg=ACCENT_SOFT, fg=ACCENT_HOVER)
+        self._status_bar_var.set("完了しました")
+        self._add_close_button()
+        self._root.protocol("WM_DELETE_WINDOW", self._root.destroy)
+
+    def _show_error(self, message: str) -> None:
+        self._status_bar_frame.configure(bg=DANGER_SOFT)
+        self._status_bar_label.configure(bg=DANGER_SOFT, fg=DANGER)
+        self._status_bar_var.set(f"エラー: {message}")
+        self._add_close_button()
+        self._root.protocol("WM_DELETE_WINDOW", self._root.destroy)
+
+    def _add_close_button(self) -> None:
+        btn = tk.Button(
+            self._status_bar_frame,
+            text="閉じる",
+            command=self._root.destroy,
+            bg=ACCENT,
+            fg=BUTTON_TEXT,
+            activebackground=ACCENT_HOVER,
+            activeforeground=BUTTON_TEXT,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=(FONT_UI, 9, "bold"),
+            padx=14,
+            pady=6,
+            cursor="hand2",
+        )
+        btn.pack(side="right")
+        _add_button_hover(btn, ACCENT, ACCENT_HOVER)
 
 
 def show_popup_message(message: str, title: str = "完了通知") -> None:
