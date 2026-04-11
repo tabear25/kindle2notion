@@ -27,7 +27,7 @@ Validator = Callable[[str], Optional[str]]
 Transformer = Callable[[str], object]
 
 
-def _center_window(window: tk.Tk, width: int, height: int) -> None:
+def _center_window(window, width: int, height: int) -> None:
     window.update_idletasks()
     screen_width = window.winfo_screenwidth()
     screen_height = window.winfo_screenheight()
@@ -49,6 +49,18 @@ def _build_window(title: str, width: int, height: int) -> tk.Tk:
     root.attributes("-topmost", True)
     _center_window(root, width, height)
     return root
+
+
+def _build_modal(parent, title: str, width: int, height: int) -> tk.Toplevel:
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.configure(bg=WINDOW_BG)
+    dialog.resizable(False, False)
+    dialog.attributes("-topmost", True)
+    dialog.transient(parent)
+    dialog.grab_set()
+    _center_window(dialog, width, height)
+    return dialog
 
 
 def _create_dialog_shell(
@@ -109,6 +121,7 @@ def _create_dialog_shell(
 
 def _show_input_dialog(
     *,
+    parent=None,
     window_title: str,
     badge_text: str,
     title: str,
@@ -125,7 +138,10 @@ def _show_input_dialog(
     entry_font: Optional[tuple] = None,
     entry_justify: str = "left",
 ) -> object:
-    root = _build_window(window_title, width, height)
+    if parent is not None:
+        root = _build_modal(parent, window_title, width, height)
+    else:
+        root = _build_window(window_title, width, height)
     body = _create_dialog_shell(root, badge_text, title, description)
 
     label = tk.Label(
@@ -275,7 +291,10 @@ def _show_input_dialog(
         root.after(100, lambda: entry.select_range(0, tk.END))
 
     set_field_style()
-    root.mainloop()
+    if parent is not None:
+        root.wait_window()
+    else:
+        root.mainloop()
     return result
 
 
@@ -493,8 +512,8 @@ class ProgressWindow:
         self._status_bar_frame.configure(bg=ACCENT_SOFT)
         self._status_bar_label.configure(bg=ACCENT_SOFT, fg=ACCENT_HOVER)
         self._status_bar_var.set("完了しました")
-        self._add_close_button()
         self._root.protocol("WM_DELETE_WINDOW", self._root.destroy)
+        self._root.after(3000, self._root.destroy)
 
     def _show_error(self, message: str) -> None:
         self._status_bar_frame.configure(bg=DANGER_SOFT)
@@ -502,6 +521,7 @@ class ProgressWindow:
         self._status_bar_var.set(f"エラー: {message}")
         self._add_close_button()
         self._root.protocol("WM_DELETE_WINDOW", self._root.destroy)
+        self._root.after(8000, self._root.destroy)
 
     def _add_close_button(self) -> None:
         btn = tk.Button(
@@ -561,7 +581,7 @@ def ask_book_limit(default: Optional[int] = None) -> Optional[int]:
     return cast(Optional[int], result)
 
 
-def prompt_two_factor_code() -> Optional[str]:
+def prompt_two_factor_code(parent=None) -> Optional[str]:
     def validate(value: str) -> Optional[str]:
         code = value.strip().replace(" ", "")
         if not code:
@@ -571,6 +591,7 @@ def prompt_two_factor_code() -> Optional[str]:
         return None
 
     result = _show_input_dialog(
+        parent=parent,
         window_title="二段階認証",
         badge_text="SECURITY CHECK",
         title="Amazonの認証コードを入力してください",

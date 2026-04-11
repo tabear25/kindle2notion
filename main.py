@@ -60,13 +60,14 @@ if GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE_ENV:
 def prompt_book_limit():
     return ask_book_limit()
 
-def run(playwright, max_books=None, progress_callback=None):
+def run(playwright, max_books=None, progress_callback=None, two_factor_prompt=None):
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context()
     page = context.new_page()
 
     try:
-        amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD)
+        amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD,
+                                   two_factor_prompt=two_factor_prompt)
         context.storage_state(path=str(STORAGE_STATE_PATH))
     finally:
         browser.close()
@@ -88,8 +89,21 @@ if __name__ == "__main__":
 
     def _worker():
         try:
+            def two_factor_prompt():
+                result_holder = [None]
+                event = threading.Event()
+
+                def _show():
+                    result_holder[0] = gui.prompt_two_factor_code(parent=window._root)
+                    event.set()
+
+                window._root.after(0, _show)
+                event.wait()
+                return result_holder[0]
+
             with sync_playwright() as p:
-                notes = run(p, max_books=max_books, progress_callback=window.update)
+                notes = run(p, max_books=max_books, progress_callback=window.update,
+                            two_factor_prompt=two_factor_prompt)
             toNotion.save_notes_to_notion(
                 NOTION_API_KEY, NOTION_DATABASE_ID, notes,
                 progress_callback=window.update,

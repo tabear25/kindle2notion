@@ -11,7 +11,7 @@ TWO_FACTOR_SUBMIT_SELECTOR = "#auth-signin-button"
 IDLE = "networkidle"
 LOAD_TIMEOUT = 15000
 
-def perform_login(page, amazon_email, amazon_password):
+def perform_login(page, amazon_email, amazon_password, two_factor_prompt=None):
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
     page.fill(EMAIL_SELECTOR, amazon_email)
     page.click(CONTINUE_SELECTOR)
@@ -21,7 +21,10 @@ def perform_login(page, amazon_email, amazon_password):
 
     try:
         page.wait_for_selector(TWO_FACTOR_INPUT_SELECTOR, timeout=LOAD_TIMEOUT)
-        code = prompt_two_factor_code()
+        if two_factor_prompt is not None:
+            code = two_factor_prompt()
+        else:
+            code = prompt_two_factor_code()
         if code is None:
             raise SystemExit("Cancelled by user during two-factor authentication.")
         page.fill(TWO_FACTOR_INPUT_SELECTOR, code)
