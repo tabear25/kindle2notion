@@ -1,130 +1,131 @@
-/* ============================================================
-   kindle2notion web – frontend controller
-   SSE client, 2FA modal, progress updates, screen transitions
-   ============================================================ */
-
 (function () {
   "use strict";
 
-  // ---- DOM refs ----
   var screens = {
-    start:    document.getElementById("screen-start"),
+    start: document.getElementById("screen-start"),
     progress: document.getElementById("screen-progress"),
-    done:     document.getElementById("screen-done"),
-    error:    document.getElementById("screen-error"),
+    done: document.getElementById("screen-done"),
+    error: document.getElementById("screen-error"),
   };
 
-  var btnStart   = document.getElementById("btn-start");
+  var btnStart = document.getElementById("btn-start");
   var btnRestart = document.getElementById("btn-restart");
-  var btnRetry   = document.getElementById("btn-retry");
+  var btnRetry = document.getElementById("btn-retry");
   var inputBooks = document.getElementById("max-books");
 
-  var modal2fa   = document.getElementById("modal-2fa");
-  var input2fa   = document.getElementById("input-2fa");
-  var btn2fa     = document.getElementById("btn-2fa");
+  var modal2fa = document.getElementById("modal-2fa");
+  var input2fa = document.getElementById("input-2fa");
+  var btn2fa = document.getElementById("btn-2fa");
 
   var globalStatus = document.getElementById("global-status");
-  var doneMessage  = document.getElementById("done-message");
+  var doneMessage = document.getElementById("done-message");
   var errorMessage = document.getElementById("error-message");
 
   var eventSource = null;
 
-  // ---- Screen management ----
   function showScreen(name) {
     Object.keys(screens).forEach(function (key) {
       screens[key].classList.toggle("active", key === name);
     });
   }
 
-  // ---- Progress helpers ----
+  function setStatus(message, stateClass) {
+    globalStatus.textContent = message;
+    globalStatus.className = "status-bar" + (stateClass ? " " + stateClass : "");
+  }
+
   function updatePhase(phase, current, total, message) {
-    var bar    = document.getElementById("bar-" + phase);
-    var count  = document.getElementById("count-" + phase);
+    var bar = document.getElementById("bar-" + phase);
+    var count = document.getElementById("count-" + phase);
     var status = document.getElementById("status-" + phase);
-    if (!bar) return;
+    if (!bar || !count || !status) {
+      return;
+    }
 
     if (total > 0) {
       bar.style.width = ((current / total) * 100).toFixed(1) + "%";
       count.textContent = current + " / " + total;
     }
+
     status.textContent = message;
-    globalStatus.textContent = message;
+    setStatus(message);
   }
 
   function resetProgress() {
     ["scrape", "notion", "sheets"].forEach(function (phase) {
-      var bar    = document.getElementById("bar-" + phase);
-      var count  = document.getElementById("count-" + phase);
+      var bar = document.getElementById("bar-" + phase);
+      var count = document.getElementById("count-" + phase);
       var status = document.getElementById("status-" + phase);
-      if (bar) bar.style.width = "0%";
-      if (count) count.textContent = "";
-      if (status) status.textContent = "";
+      if (bar) {
+        bar.style.width = "0%";
+      }
+      if (count) {
+        count.textContent = "";
+      }
+      if (status) {
+        status.textContent = "";
+      }
     });
-    globalStatus.textContent = "ログインしています...";
-    globalStatus.className = "status-bar";
+
+    setStatus("ログインを待っています...");
   }
 
-  // ---- SSE ----
+  function closeSSE() {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  }
+
   function connectSSE() {
-    if (eventSource) { eventSource.close(); }
+    closeSSE();
     eventSource = new EventSource("/api/events");
 
-    eventSource.addEventListener("started", function () {
-      // pipeline started — already on progress screen
-    });
-
-    eventSource.addEventListener("progress", function (e) {
-      var d = JSON.parse(e.data);
-      updatePhase(d.phase, d.current, d.total, d.message);
+    eventSource.addEventListener("progress", function (event) {
+      var data = JSON.parse(event.data);
+      updatePhase(data.phase, data.current, data.total, data.message);
     });
 
     eventSource.addEventListener("2fa_required", function () {
       modal2fa.classList.add("active");
       input2fa.value = "";
       input2fa.focus();
+      setStatus("2段階認証コードの入力を待っています...");
     });
 
-    eventSource.addEventListener("done", function (e) {
-      var d = JSON.parse(e.data);
-      // Set all bars to 100 %
+    eventSource.addEventListener("done", function (event) {
+      var data = JSON.parse(event.data);
+
       ["scrape", "notion", "sheets"].forEach(function (phase) {
         var bar = document.getElementById("bar-" + phase);
-        if (bar) bar.style.width = "100%";
+        if (bar) {
+          bar.style.width = "100%";
+        }
       });
-      globalStatus.textContent = "完了しました";
-      globalStatus.className = "status-bar done";
 
-      doneMessage.textContent = d.notes_count + " 件のハイライトを処理しました。";
+      setStatus("同期が完了しました", "done");
+      doneMessage.textContent = data.notes_count + " 件のハイライトを処理しました。";
+      modal2fa.classList.remove("active");
       showScreen("done");
       closeSSE();
     });
 
-    eventSource.addEventListener("error", function (e) {
-      // SSE spec fires generic "error" on connection loss — check if it's ours
-      if (e.data) {
-        var d = JSON.parse(e.data);
-        errorMessage.textContent = d.message;
-        showScreen("error");
-        closeSSE();
-      }
+    eventSource.addEventListener("pipeline_error", function (event) {
+      var data = JSON.parse(event.data);
+      modal2fa.classList.remove("active");
+      errorMessage.textContent = data.message;
+      setStatus("エラーが発生しました", "error");
+      showScreen("error");
+      closeSSE();
     });
-
-    eventSource.onerror = function () {
-      // Connection lost — try to reconnect after a short delay
-      // (The browser's built-in reconnect may also fire)
-    };
   }
 
-  function closeSSE() {
-    if (eventSource) { eventSource.close(); eventSource = null; }
-  }
-
-  // ---- Start pipeline ----
   function startPipeline() {
     var value = inputBooks.value.trim();
     var body = {};
-    if (value && parseInt(value, 10) > 0) {
-      body.max_books = parseInt(value, 10);
+
+    if (value) {
+      body.max_books = value;
     }
 
     btnStart.disabled = true;
@@ -135,16 +136,19 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
-      .then(function (res) {
-        if (!res.ok) {
-          return res.json().then(function (d) { throw new Error(d.error || "Failed to start"); });
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (data) {
+            throw new Error(data.error || "同期を開始できませんでした。");
+          });
         }
+
         resetProgress();
         showScreen("progress");
         connectSSE();
       })
-      .catch(function (err) {
-        alert(err.message);
+      .catch(function (error) {
+        alert(error.message);
       })
       .finally(function () {
         btnStart.disabled = false;
@@ -152,10 +156,11 @@
       });
   }
 
-  // ---- Submit 2FA ----
   function submit2FA() {
     var code = input2fa.value.trim().replace(/\s/g, "");
-    if (!code) return;
+    if (!code) {
+      return;
+    }
 
     btn2fa.disabled = true;
     btn2fa.textContent = "送信中...";
@@ -165,14 +170,18 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code: code }),
     })
-      .then(function (res) {
-        if (!res.ok) {
-          return res.json().then(function (d) { throw new Error(d.error || "Failed"); });
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (data) {
+            throw new Error(data.error || "コードを送信できませんでした。");
+          });
         }
+
         modal2fa.classList.remove("active");
+        setStatus("認証コードを送信しました。続行を待っています...");
       })
-      .catch(function (err) {
-        alert(err.message);
+      .catch(function (error) {
+        alert(error.message);
       })
       .finally(function () {
         btn2fa.disabled = false;
@@ -180,24 +189,28 @@
       });
   }
 
-  // ---- Go back to start ----
   function goToStart() {
     closeSSE();
+    modal2fa.classList.remove("active");
     inputBooks.value = "";
+    input2fa.value = "";
     showScreen("start");
   }
 
-  // ---- Bind events ----
   btnStart.addEventListener("click", startPipeline);
   btnRestart.addEventListener("click", goToStart);
   btnRetry.addEventListener("click", goToStart);
   btn2fa.addEventListener("click", submit2FA);
 
-  input2fa.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") submit2FA();
+  input2fa.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      submit2FA();
+    }
   });
 
-  inputBooks.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") startPipeline();
+  inputBooks.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      startPipeline();
+    }
   });
 })();

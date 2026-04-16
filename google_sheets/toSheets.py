@@ -5,6 +5,8 @@ from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 from tqdm import tqdm
 
+from note_utils import build_note_key, build_note_key_from_note, has_any_note_value, note_to_row
+
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -45,13 +47,18 @@ def _ensure_header_row(worksheet):
         worksheet.append_row(HEADERS, value_input_option="RAW")
 
 
-def _get_existing_contents(worksheet):
-    column_values = worksheet.col_values(2)
-    if not column_values:
+def _get_existing_note_keys(worksheet):
+    rows = worksheet.get_all_values()
+    if not rows:
         return set()
 
-    start_index = 1 if column_values[0].strip() == "Content" else 0
-    return {value for value in column_values[start_index:] if value.strip()}
+    start_index = 1 if rows[0][: len(HEADERS)] == HEADERS else 0
+    note_keys = set()
+    for row in rows[start_index:]:
+        padded_row = (row + ["", "", ""])[: len(HEADERS)]
+        if has_any_note_value(padded_row):
+            note_keys.add(build_note_key(*padded_row))
+    return note_keys
 
 
 def save_notes_to_google_sheets(service_account_file, spreadsheet_id, worksheet_name, notes, progress_callback=None):
@@ -59,24 +66,19 @@ def save_notes_to_google_sheets(service_account_file, spreadsheet_id, worksheet_
     spreadsheet = client.open_by_key(spreadsheet_id)
     worksheet = _get_or_create_worksheet(spreadsheet, worksheet_name)
     _ensure_header_row(worksheet)
-    existing_contents = _get_existing_contents(worksheet)
+    existing_note_keys = _get_existing_note_keys(worksheet)
 
     rows_to_append = []
     for i, note in enumerate(tqdm(notes, desc="Sheets")):
         if progress_callback:
             progress_callback("sheets", i + 1, len(notes), note.get("title", ""))
-        content = note.get("content", "")
-        if not content or content in existing_contents:
+
+        note_key = build_note_key_from_note(note)
+        if not note_key[1] or note_key in existing_note_keys:
             continue
 
-        rows_to_append.append(
-            [
-                note.get("title", ""),
-                content,
-                note.get("page", ""),
-            ]
-        )
-        existing_contents.add(content)
+        rows_to_append.append(note_to_row(note))
+        existing_note_keys.add(note_key)
 
     if not rows_to_append:
         return

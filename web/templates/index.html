@@ -8,36 +8,33 @@
 </head>
 <body>
   <div class="container">
-
-    <!-- ===== Start Screen ===== -->
     <div id="screen-start" class="screen active">
       <div class="card">
         <div class="card-header">
           <span class="badge">KINDLE SYNC</span>
-          <h1>Kindleハイライト同期</h1>
-          <p class="subtitle">Kindle → Notion / Google Sheets</p>
+          <h1>Kindle ハイライト同期</h1>
+          <p class="subtitle">Kindle のハイライトを Notion と Google Sheets に保存します。</p>
         </div>
         <div class="card-body">
           <label for="max-books">取得する書籍数</label>
-          <input id="max-books" type="number" min="1" placeholder="空欄 = すべて" inputmode="numeric">
-          <p class="helper">空欄のまま開始すると、すべての書籍を対象にします。</p>
+          <input id="max-books" type="number" min="1" placeholder="空欄ですべて取得" inputmode="numeric">
+          <p class="helper">空欄のまま開始すると、表示されているすべての書籍を対象に処理します。</p>
           <button id="btn-start" class="btn-primary">同期を開始</button>
         </div>
       </div>
     </div>
 
-    <!-- ===== Progress Screen ===== -->
     <div id="screen-progress" class="screen">
       <div class="card">
         <div class="card-header">
           <span class="badge">SYNC IN PROGRESS</span>
-          <h1>同期中...</h1>
-          <p class="subtitle">進捗状況をリアルタイムで表示します</p>
+          <h1>同期を実行中</h1>
+          <p class="subtitle">現在の進行状況をリアルタイムで表示しています。</p>
         </div>
         <div class="card-body">
           <div class="phase" id="phase-scrape">
             <div class="phase-top">
-              <span class="phase-label">スクレイピング</span>
+              <span class="phase-label">ハイライト取得</span>
               <span class="phase-count" id="count-scrape"></span>
             </div>
             <div class="progress-track"><div class="progress-bar" id="bar-scrape"></div></div>
@@ -46,7 +43,7 @@
 
           <div class="phase" id="phase-notion">
             <div class="phase-top">
-              <span class="phase-label">Notionへ保存</span>
+              <span class="phase-label">Notion 保存</span>
               <span class="phase-count" id="count-notion"></span>
             </div>
             <div class="progress-track"><div class="progress-bar" id="bar-notion"></div></div>
@@ -55,23 +52,22 @@
 
           <div class="phase" id="phase-sheets">
             <div class="phase-top">
-              <span class="phase-label">Google Sheetsへ保存</span>
+              <span class="phase-label">Google Sheets 保存</span>
               <span class="phase-count" id="count-sheets"></span>
             </div>
             <div class="progress-track"><div class="progress-bar" id="bar-sheets"></div></div>
             <p class="phase-status" id="status-sheets"></p>
           </div>
         </div>
-        <div class="status-bar" id="global-status">ログインしています...</div>
+        <div class="status-bar" id="global-status">ログインを待っています...</div>
       </div>
     </div>
 
-    <!-- ===== Done Screen ===== -->
     <div id="screen-done" class="screen">
       <div class="card">
         <div class="card-header done-header">
           <span class="badge badge-done">COMPLETE</span>
-          <h1>同期完了</h1>
+          <h1>同期が完了しました</h1>
           <p class="subtitle" id="done-message"></p>
         </div>
         <div class="card-body">
@@ -80,7 +76,6 @@
       </div>
     </div>
 
-    <!-- ===== Error Screen ===== -->
     <div id="screen-error" class="screen">
       <div class="card">
         <div class="card-header error-header">
@@ -89,28 +84,26 @@
           <p class="subtitle error-text" id="error-message"></p>
         </div>
         <div class="card-body">
-          <button id="btn-retry" class="btn-primary">もう一度試す</button>
+          <button id="btn-retry" class="btn-primary">開始画面へ戻る</button>
         </div>
       </div>
     </div>
 
-    <!-- ===== 2FA Modal ===== -->
     <div id="modal-2fa" class="modal">
       <div class="modal-content card">
         <div class="card-header">
           <span class="badge">SECURITY CHECK</span>
-          <h1>二段階認証</h1>
-          <p class="subtitle">Amazonの認証コードを入力してください</p>
+          <h1>2段階認証</h1>
+          <p class="subtitle">Amazon から届いた確認コードを入力してください。</p>
         </div>
         <div class="card-body">
-          <label for="input-2fa">認証コード</label>
+          <label for="input-2fa">確認コード</label>
           <input id="input-2fa" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
-          <p class="helper">メールや認証アプリに表示されたコードを入力してください。</p>
+          <p class="helper">メールや認証アプリに表示されたコードを、そのまま入力してください。</p>
           <button id="btn-2fa" class="btn-primary">コードを送信</button>
         </div>
       </div>
     </div>
-
   </div>
 
   <script src="/static/app.js"></script>
