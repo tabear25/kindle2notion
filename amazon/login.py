@@ -1,5 +1,4 @@
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from gui_utils.gui import prompt_two_factor_code
 
 AMAZON_NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
 EMAIL_SELECTOR = "#ap_email_login"
@@ -11,7 +10,11 @@ TWO_FACTOR_SUBMIT_SELECTOR = "#auth-signin-button"
 IDLE = "networkidle"
 LOAD_TIMEOUT = 15000
 
-def perform_login(page, amazon_email, amazon_password):
+def perform_login(page, amazon_email, amazon_password, two_factor_callback=None):
+    if two_factor_callback is None:
+        from gui_utils.gui import prompt_two_factor_code
+        two_factor_callback = prompt_two_factor_code
+
     page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
     page.fill(EMAIL_SELECTOR, amazon_email)
     page.click(CONTINUE_SELECTOR)
@@ -21,7 +24,7 @@ def perform_login(page, amazon_email, amazon_password):
 
     try:
         page.wait_for_selector(TWO_FACTOR_INPUT_SELECTOR, timeout=LOAD_TIMEOUT)
-        code = prompt_two_factor_code()
+        code = two_factor_callback()
         if code is None:
             raise SystemExit("Cancelled by user during two-factor authentication.")
         page.fill(TWO_FACTOR_INPUT_SELECTOR, code)
