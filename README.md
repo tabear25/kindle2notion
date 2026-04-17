@@ -173,6 +173,30 @@ http://<server-ip>:5000
 - `WEB_USERNAME` と `WEB_PASSWORD` を設定すると Basic 認証が有効になります
 - Web 版でも 2 段階認証コードを画面から入力できます
 
+### 外出先からアクセスする (VPS デプロイ)
+
+同じ Wi-Fi 外からスマホで利用したい場合は、無料枠のクラウド VPS に常駐させ、Caddy (自動 HTTPS) + DuckDNS (無料サブドメイン) 経由で公開できます。GitHub Actions を使って `main` に push するだけで自動デプロイされる構成です。
+
+手順とファイル:
+
+- 詳細ガイド: [`deploy/README.md`](deploy/README.md)
+- 構成ファイル一式: `deploy/` と `.github/workflows/deploy.yml`
+
+外部公開する場合は **必ず `WEB_USERNAME` / `WEB_PASSWORD` を設定**してください (未設定だと認証なしで誰でもアクセス可能)。
+
+## 手動で行う必要がある設定 (外部公開デプロイ向け)
+
+VPS へのデプロイには、スクリプトで自動化できない手動操作が 8 つあります。詳細な手順は [`deploy/README.md`](deploy/README.md) を参照してください。ここには必要な項目の一覧のみを掲載します。
+
+1. **クラウド VPS のアカウント作成とインスタンス起動** — Oracle Cloud Always Free (Ampere A1) または GCP e2-micro を選択し、Ubuntu 24.04 LTS でパブリック IP を確保する
+2. **DuckDNS のサブドメイン取得** — 無料サブドメインを予約し、発行された **トークン** をメモする
+3. **SSH 鍵ペアの生成と VPS への登録** — `ssh-keygen` で鍵を作り公開鍵を VPS に配置、パスワード認証と root ログインを無効化する
+4. **VPS 上での初回セットアップ** — リポジトリを `/opt/kindle2notion` に clone し `deploy/setup.sh` を実行、DuckDNS トークン配置と `Caddyfile` のドメイン書き換えを行う
+5. **`config/KEYS.env` の作成 (VPS 上のみ、Git には含めない)** — Amazon / Notion / (任意) Google Sheets の資格情報に加え、**`WEB_USERNAME`** と **`WEB_PASSWORD`** (長いランダム文字列)、`WEB_HOST=127.0.0.1` を記入する
+6. **Notion / Amazon / Google シートの各種資格情報の取得** — 上記「セットアップ」セクションを参照しつつ、それぞれのアカウント情報と API キーを準備する
+7. **GitHub リポジトリの Secrets 登録** — `VPS_HOST` / `VPS_USER` / `VPS_SSH_KEY` (必要なら `VPS_PORT`) をリポジトリの Actions Secrets に登録する
+8. **初回動作確認** — `systemctl start kindle2notion-web` でサービスを起動し、スマホのモバイル回線から DuckDNS の URL にアクセスして Basic 認証とパイプライン動作を確認する
+
 ## テスト
 
 ```bash

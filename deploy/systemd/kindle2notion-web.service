@@ -1,0 +1,25 @@
+[Unit]
+Description=kindle2notion Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kindle2notion
+Group=kindle2notion
+WorkingDirectory=/opt/kindle2notion
+EnvironmentFile=/opt/kindle2notion/config/KEYS.env
+Environment=WEB_HOST=127.0.0.1
+Environment=WEB_PORT=5000
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/kindle2notion/.cache/ms-playwright
+ExecStart=/opt/kindle2notion/.venv/bin/python web_main.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/kindle2notion
+
+[Install]
+WantedBy=multi-user.target

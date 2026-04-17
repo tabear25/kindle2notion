@@ -1,0 +1,26 @@
+# Caddy reverse proxy for kindle2notion Web UI.
+# Replace `kindle2notion-xxx.duckdns.org` with your own domain before using.
+
+kindle2notion-xxx.duckdns.org {
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:5000 {
+		# SSE (/api/events) needs streaming without buffering.
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+
+	log {
+		output file /var/log/caddy/kindle2notion.log
+		format console
+	}
+}
