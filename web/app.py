@@ -5,10 +5,27 @@ import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from config import load_env_file
 from web.pipeline import PipelineState, run_pipeline
 
 
+def _parse_max_books(value):
+    if value in (None, ""):
+        return None
+
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("max_books must be a positive integer.") from exc
+
+    if parsed <= 0:
+        raise ValueError("max_books must be a positive integer.")
+
+    return parsed
+
+
 def create_app():
+    load_env_file()
     app = Flask(__name__)
 
     # ------------------------------------------------------------------
@@ -54,8 +71,7 @@ def create_app():
 
         try:
             body = request.get_json(silent=True) or {}
-            max_books_raw = body.get("max_books")
-            max_books = int(max_books_raw) if max_books_raw else None
+            max_books = _parse_max_books(body.get("max_books"))
 
             # Reset state for a new run
             state = PipelineState()
@@ -67,6 +83,9 @@ def create_app():
             )
             worker.start()
             return jsonify({"status": "started"})
+        except ValueError as exc:
+            run_lock.release()
+            return jsonify({"error": str(exc)}), 400
         except Exception:
             run_lock.release()
             raise

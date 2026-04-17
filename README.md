@@ -1,147 +1,240 @@
-# これは何（What's this?）
-Kindleのハイライトを取得し、NotionのDBに格納するシステムです。  
-Google スプレッドシートへの保存にも対応しています（Notion保存後に続けて保存）。
+# kindle2notion
 
-# 前提条件（Prerequisites）
- [Kindle メモとハイライト](https://read.amazon.co.jp/notebook) を利用します。  
-AmazonアカウントとNotionアカウントが必要です。
-Google スプレッドシートにも保存する場合は、Googleアカウント / Google Cloud の設定も必要です。
-このリポジトリは日本のAmazonアカウントでの利用を想定しているので、用意するAmazonアカウントは日本で作成されたものである必要があります。
+Kindle Notebook のハイライトを取得し、Notion データベースへ保存するツールです。  
+必要に応じて Google Sheets にも同時保存できます。
 
-## 必要なライブラリ（Required Libraries）
-`requirements/requirements.txt` にまとめてあるので、インストールしてください。
+現在は次の 2 つの起動方法に対応しています。
 
-# 使い方（How to Use）
+- `python main.py`
+  - Tkinter のローカル GUI で実行
+- `python web_main.py`
+  - Flask の Web 画面で実行
 
-### 1. 準備（Preparation）
-1. **Notion でデータベース（=DB）を作成する**
-   - Notion 上で DB を作成してください。
-   - DBのフォーマットは以下の通りにしてください。
-   - 最初の3列はこのフォーマットで作成してください。
+## できること
 
-   | Title  | Content | Page  |
-   |-------|------|-------|
+- Amazon Kindle Notebook からハイライトを取得
+- Notion データベースへ保存
+- Google Sheets へ任意で保存
+- Amazon の 2 段階認証コード入力に対応
+- 同じ `Title / Content / Page` の組み合わせは重複保存しない
 
-2. **Notion API（無料）を取得する**
-   - [Notion API](https://www.notion.so/profile/integrations) から Integrationを作成し、API Keyを控えてください。
+## 動作確認の状況
 
-3. **DBID（無料）を取得する**
-   - 1 で作成した DB の ID（=DBID）を取得します。
-   - 共有 URL の以下部分が DBID です。
-   ```
-   https://www.notion.so/<DBID>?v=<ビューID>
-   ```
+2026-04-17 時点で、ローカルで次を確認済みです。
 
-4. **Google スプレッドシート（任意）を使う場合の準備**
-   - [Google Cloud Console](https://console.cloud.google.com)を開く
-   - Google Cloud Console でプロジェクトを作成してください。
-   - **重要**: 以降の API 有効化 / Service Account 作成は、必ず同じプロジェクトで行ってください。
-     - プロジェクトがズレると、API を有効化したのに使えない（`403`）状態になります。
-   - Google Cloud Console の左メニューから「API とサービス」→「ライブラリ」を開き、以下を有効化してください。
-     - `Google Sheets API`
-     - `Google Drive API`
-     - 各APIのページで「有効にする」ボタンを押します。
-     - 有効化した直後は反映に数分かかることがあります。
-   - Google Cloud Console の左メニューから「IAM と管理」→「サービス アカウント」を開いてください。
-   - 「サービス アカウントを作成」を押して、Service Account を作成してください。
-     - 名前: 分かりやすい名前でOK（例: `kindle2spreadsheet`）
-     - ロール: このスクリプトではスプレッドシート側の共有権限で制御するため、ここは細かく迷わなくても大丈夫です。
-   - 作成した Service Account をクリックし、「キー」タブ（または「鍵」）から JSON キーを発行してください。
-     - 「鍵を追加」→「新しい鍵を作成」→「JSON」→ 作成
-   - JSON キーのダウンロードが始まるので、JSON ファイルを保存してください。
-   - 保存先の Google スプレッドシートを作成してください。
-   - 作成したスプレッドシート右上の「共有」から、Service Account のメールアドレスを追加し、`編集者` 権限を付与してください。
-     - Service Account のメールアドレスは、以下のような形式です。
-       - `xxxxx@xxxxx.iam.gserviceaccount.com`
-     - 共有先として「自分のGoogleアカウント」ではなく、**Service Account のメールアドレス**を入れる点に注意してください。
-     - 共有していないと、実行時に `PermissionError` / `403` が発生します。
-   - スプレッドシートID（`GOOGLE_SHEETS_SPREADSHEET_ID`）は URL の以下部分です。
-   ```
-   https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit#gid=0
-   ```
-   - 例:
-   ```
-   https://docs.google.com/spreadsheets/d/14NpdB-IrEwoF1LJIpe1gpHgB7uvmMQwkes4BU3KAy4M/edit?gid=0#gid=0
-   ```
-   - この例の `GOOGLE_SHEETS_SPREADSHEET_ID` は以下です。
-   ```
-   14NpdB-IrEwoF1LJIpe1gpHgB7uvmMQwkes4BU3KAy4M
-   ```
-   - `gid=0` の `0` はワークシート（タブ）のIDであり、`GOOGLE_SHEETS_SPREADSHEET_ID` ではありません。
-   - スプレッドシートのフォーマットは Notion と同じく以下を先頭3列にしてください（未作成でも、空シートならヘッダ行を自動追加します）。
+- Python の構文チェック: `python -m compileall .`
+- テスト: `python -m pytest test -q -p no:cacheprovider`
+- 結果: `5 passed`
+- Flask の最低限の起動確認
+  - `/` が `200`
+  - 不正な `max_books` を送ると `/api/start` が `400`
+- `main.load_config()` が現在の `config/KEYS.env` を読めること
 
-   | Title  | Content | Page  |
-   |-------|------|-------|
-   - ワークシート名（タブ名）は `GOOGLE_SHEETS_WORKSHEET_NAME` で指定できます（未指定時は `Sheet1`）。
-   - 指定したワークシートが存在しない場合は、自動で新規作成します。
+未確認のもの:
 
-5. **Amazon アカウントの ID / PW を確認する**
-   - Kindle ハイライトにアクセスできるアカウント情報を使ってください。
+- Amazon への実ログイン
+- Kindle Notebook の実スクレイピング
+- Notion API への実保存
+- Google Sheets API への実保存
 
-6. **環境変数ファイルを作成する**
-   - `config/KEYS.env` を作成し、以下のフォーマットで記述してください。
-   ```
-   # AmazonアカウントのID
-   AMAZON_EMAIL=
-   # Amazonアカウントのパスワード
-   AMAZON_PASSWORD=
-   # Notion APIキー
-   NOTION_API_KEY=
-   # Notion DBのID
-   NOTION_DATABASE_ID=
+この 4 点は、実アカウント情報とネットワーク接続が必要です。
 
-   # Google スプレッドシート保存を使う場合（任意）
-   # Service Account JSONキーのファイルパス（推奨）
-   # 例: C:\Users\<ユーザー名>\Downloads\service-account.json
-   GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=
-   # スプレッドシートURLの /d/<ここ>/edit の部分
-   GOOGLE_SHEETS_SPREADSHEET_ID=
-   # ワークシート名（任意。未指定時は Sheet1）
-   GOOGLE_SHEETS_WORKSHEET_NAME=Sheet1
-   ```
-   - `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` は **JSON本文そのものではなく、JSONファイルのパス** を設定する運用を推奨します。
-   - 他の記事やメモで `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE_ENV` という名前を見かけることがありますが、このプロジェクトのコードが読み込むのは `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` です。
-   - Windows のパスは以下のようにそのまま書けます。
-   ```
-   GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=C:\Users\<ユーザー名>\Downloads\service-account.json
-   ```
-   - `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` に JSON の中身（`{ ... }` 全体）を直接入れる方法もありますが、非エンジニア向けの運用ではミスが増えやすいため非推奨です。
-     - 改行や引用符、`\n` の扱いで崩れやすい
-     - `.env` ファイルが長くなり、編集ミスしやすい
-   - Google スプレッドシート保存を使わない場合は、`GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` と `GOOGLE_SHEETS_SPREADSHEET_ID` は未設定のままにしてください。
-   - Google スプレッドシート保存を使う場合は、`GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` と `GOOGLE_SHEETS_SPREADSHEET_ID` を両方設定してください
-   - `GOOGLE_SHEETS_WORKSHEET_NAME` は省略できます。省略した場合は `Sheet1` が使われます。
+## 前提条件
 
-7. **Playwright のブラウザをインストールする**
-   - 初回のみ実行してください。
-   ```
-   playwright install chromium
-   ```
+- Python がインストールされていること
+- `pip install -r requirements/requirements.txt` を実行済みであること
+- Playwright の Chromium をインストール済みであること
 
-### 2. 実行する（Run the Script）
-1. `kindle2notion` ディレクトリで実行します。
-   ```
-   python main.py
-   ```
-2. 起動後、GUI ダイアログで「何冊分スクレイピングするか」を入力します。
-   - 正の整数: 指定冊数だけ処理
-   - 空欄: 全冊処理
-   - キャンセル: 実行中止
-3. Amazonへログインします。
-4. 2段階認証が表示された場合は認証を完了してください（待機時間は `amazon/login.py` の `TWO_FACTOR_WAIT_MS`）。
-5. 取得後、Notionへの保存が実行されます。
-6. Google スプレッドシート用の環境変数が設定されている場合は、続けてGoogle スプレッドシートにも保存されます。
+```bash
+playwright install chromium
+```
 
-### 注意点（Notes）
-- Notion / Google スプレッドシートともに、既存の `Content` と同じテキストは重複登録をスキップします。
-- Google スプレッドシートの保存には、スプレッドシートを Service Account に共有している必要があります。
-- Google Cloud 側で `Google Sheets API` / `Google Drive API` が無効だと保存に失敗します。
-- `Google Sheets API has not been used in project ... before or it is disabled` と表示された場合は、Service Account を作成した Google Cloud プロジェクトで `Google Sheets API` を有効化してください（有効化直後は数分待って再実行）。
-- `PermissionError` / `403` が出た場合は、以下を確認してください。
-  - `GOOGLE_SHEETS_SPREADSHEET_ID` が正しいか（URL全体ではなくID部分）
-  - スプレッドシートを Service Account のメールアドレスに `編集者` 権限で共有しているか
-  - `Google Drive API` も有効化しているか
-- `OSError: [Errno 22] Invalid argument` のようなエラーで、パスの中に `{ "type": "service_account", ... }` のような JSON が見えている場合は、`GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` に「JSONファイルのパス」ではなく「JSON本文」を入れてしまっている可能性があります。
-- Service Account の JSON キー（特に `private_key`）をチャット・画面共有・公開リポジトリに出してしまった場合は、Google Cloud Console でそのキーを削除し、新しいキーを再発行してください。
-- セッション情報は `storage_state.json` に保存されます。
-- Amazon / Notion / Google 側の画面構成・API仕様変更で動作しなくなる可能性があります。
+## セットアップ
+
+### 1. Notion データベースを用意する
+
+保存先の Notion データベースには、少なくとも次の 3 プロパティが必要です。
+
+| Property | Type |
+| --- | --- |
+| `Title` | Title |
+| `Content` | Rich text |
+| `Page` | Rich text |
+
+プロパティ名はコード内で固定されているため、名前を変える場合は `notion/toNotion.py` も合わせて修正してください。
+
+### 2. Notion API キーを用意する
+
+Notion の Integration を作成して API キーを取得してください。
+
+- 参考: https://www.notion.so/profile/integrations
+
+### 3. Notion Database ID を確認する
+
+データベース URL の `https://www.notion.so/<DATABASE_ID>?v=...` の部分が `NOTION_DATABASE_ID` です。
+
+### 4. Google Sheets を使う場合の準備
+
+Google Sheets 保存は任意です。使わない場合は設定不要です。
+
+必要なもの:
+
+- Google Cloud の Service Account
+- Service Account の JSON キー
+- 保存先 Spreadsheet の ID
+
+補足:
+
+- `Google Sheets API`
+- `Google Drive API`
+
+の両方を有効化してください。
+
+さらに、保存先スプレッドシートを Service Account のメールアドレスに共有してください。  
+共有しないと `403` や `PermissionError` になります。
+
+Spreadsheet ID は URL の `/d/<SPREADSHEET_ID>/edit` の部分です。
+
+### 5. `config/KEYS.env` を設定する
+
+`config/KEYS.env` に必要情報を記入してください。
+
+```env
+# Amazon
+AMAZON_EMAIL=
+AMAZON_PASSWORD=
+
+# Notion
+NOTION_API_KEY=
+NOTION_DATABASE_ID=
+
+# Google Sheets を使う場合のみ設定
+GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=
+GOOGLE_SHEETS_SPREADSHEET_ID=
+GOOGLE_SHEETS_WORKSHEET_NAME=Sheet1
+
+# Web UI に Basic 認証を付けたい場合のみ設定
+WEB_USERNAME=
+WEB_PASSWORD=
+```
+
+`GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` は次のどちらでも使えます。
+
+- Service Account JSON ファイルのパス
+- JSON 本文そのもの
+
+Windows ではまずファイルパス指定をおすすめします。
+
+例:
+
+```env
+GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=C:\Users\<user>\Downloads\service-account.json
+```
+
+### 6. Amazon 側の前提
+
+Amazon アカウントで Kindle Notebook が利用できることを確認してください。
+
+- https://read.amazon.co.jp/notebook
+
+## 実行方法
+
+### ローカル GUI 版
+
+```bash
+python main.py
+```
+
+流れ:
+
+1. 取得する書籍数を入力する
+2. Amazon にログインする
+3. 必要なら、表示された Chromium 側で 2 段階認証コードを入力する
+4. Kindle ハイライトを取得する
+5. Notion に保存する
+6. Google Sheets 設定があれば Sheets にも保存する
+
+GUI 版では、ログイン用ブラウザを表示している間は、Amazon 側の追加認証をブラウザ上でそのまま完了させる想定です。
+
+### Web 版
+
+```bash
+python web_main.py
+```
+
+起動後、同じマシンまたは同一ネットワーク上の端末から次へアクセスできます。
+
+```text
+http://<server-ip>:5000
+```
+
+補足:
+
+- `WEB_USERNAME` と `WEB_PASSWORD` を設定すると Basic 認証が有効になります
+- Web 版でも 2 段階認証コードを画面から入力できます
+
+## テスト
+
+```bash
+python -m pytest test -q -p no:cacheprovider
+```
+
+## よくある詰まりどころ
+
+### 1. Notion への保存で失敗する
+
+確認ポイント:
+
+- `NOTION_API_KEY` が正しいか
+- `NOTION_DATABASE_ID` が正しいか
+- Integration にデータベースへのアクセス権があるか
+- Notion データベースに `Title / Content / Page` があるか
+
+### 2. Google Sheets で `403` や `PermissionError` が出る
+
+確認ポイント:
+
+- `Google Sheets API` と `Google Drive API` を有効にしたか
+- Spreadsheet を Service Account に共有したか
+- `GOOGLE_SHEETS_SPREADSHEET_ID` が正しいか
+- `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` のパスや JSON が正しいか
+
+### 3. `OSError: [Errno 22] Invalid argument` が出る
+
+`GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` に壊れた JSON 文字列を入れている可能性があります。  
+まずは JSON ファイルのパス指定に切り替えて確認してください。
+
+### 4. Playwright 関連で起動できない
+
+次を再実行してください。
+
+```bash
+playwright install chromium
+```
+
+## リファクタリング内容
+
+今回の更新で次を調整しています。
+
+- 設定ファイル読み込みを `config/__init__.py` に集約
+- Notion / Google Sheets の重複判定を `Title / Content / Page` ベースに統一
+- Web 版の入力値バリデーションを追加
+- SSE のエラーイベント名を分離して、接続エラーと業務エラーを区別
+- Tkinter / Web UI の文字化けを解消
+- テストを自動収集されるファイル名に修正
+
+## まだ必要な情報
+
+このコードを本番に近い形で最終確認するには、次の情報と状態が必要です。
+
+- 有効な Amazon アカウント
+- Kindle Notebook に実際のハイライトが存在すること
+- 有効な Notion API キーと Database ID
+- Google Sheets を使うなら Service Account と共有済み Spreadsheet
+
+ここまで揃えば、実データでの最終確認は次の順で進めるのがおすすめです。
+
+1. `python main.py` で 1 冊だけ指定して試す
+2. Notion に 1 件以上保存されることを確認する
+3. Google Sheets を使う場合は Sheets 側も確認する
+4. 問題なければ冊数制限を外して全件実行する

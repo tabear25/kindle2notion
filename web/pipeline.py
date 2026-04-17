@@ -113,5 +113,5 @@ def run_pipeline(state, max_books):
 
     except Exception as e:
         state.status = "error"
-        state._push_event("error", {"message": str(e)})
+        state._push_event("pipeline_error", {"message": str(e)})
         traceback.print_exc()

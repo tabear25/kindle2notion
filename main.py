@@ -3,17 +3,15 @@ import threading
 from pathlib import Path
 
 import nest_asyncio
-from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 import amazon.login
 from book_transformer import transformer
+from config import BASE_DIR, load_env_file
 from notion import toNotion
 
 nest_asyncio.apply()
 
-BASE_DIR = Path(__file__).resolve().parent
-ENV_PATH = BASE_DIR / "config" / "KEYS.env"
 STORAGE_STATE_PATH = BASE_DIR / "storage_state.json"
 
 _config_loaded = False
@@ -37,7 +35,7 @@ def load_config():
     if _config_loaded:
         return
 
-    load_dotenv(ENV_PATH)
+    load_env_file()
     AMAZON_EMAIL = os.getenv("AMAZON_EMAIL")
     AMAZON_PASSWORD = os.getenv("AMAZON_PASSWORD")
     NOTION_API_KEY = os.getenv("NOTION_API_KEY")
@@ -83,13 +81,19 @@ def prompt_book_limit():
 
 def run(playwright, max_books=None, progress_callback=None,
         two_factor_callback=None, headless_login=False):
+    load_config()
     browser = playwright.chromium.launch(headless=headless_login)
     context = browser.new_context()
     page = context.new_page()
 
     try:
-        amazon.login.perform_login(page, AMAZON_EMAIL, AMAZON_PASSWORD,
-                                   two_factor_callback=two_factor_callback)
+        amazon.login.perform_login(
+            page,
+            AMAZON_EMAIL,
+            AMAZON_PASSWORD,
+            two_factor_callback=two_factor_callback,
+            allow_manual_auth=not headless_login,
+        )
         context.storage_state(path=str(STORAGE_STATE_PATH))
     finally:
         browser.close()
