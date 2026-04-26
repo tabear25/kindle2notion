@@ -7,3 +7,8 @@ config/KEYS.env
 storage_state.json
 CODEX_KEY_CONTEXT.md
 CLAUDE/
+
+# Claude Code: track project settings.json + hook scripts, ignore logs and personal overrides.
+!.claude/settings.json
+.claude/settings.local.json
+.claude/sync-docs.log
