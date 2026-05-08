@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 import tkinter.ttk as ttk
 from typing import Callable, Optional, cast
@@ -30,7 +31,7 @@ Validator = Callable[[str], Optional[str]]
 Transformer = Callable[[str], object]
 
 
-def _center_window(window: tk.Tk, width: int, height: int) -> None:
+def _center_window(window: tk.Misc, width: int, height: int) -> None:
     window.update_idletasks()
     screen_width = window.winfo_screenwidth()
     screen_height = window.winfo_screenheight()
@@ -123,9 +124,9 @@ def _create_dialog(root: tk.Tk, badge_text: str, title: str, description: str) -
     return body
 
 
-def _show_input_dialog(
+def _build_input_dialog_widgets(
+    window,
     *,
-    window_title: str,
     badge_text: str,
     title: str,
     description: str,
@@ -135,14 +136,14 @@ def _show_input_dialog(
     cancel_text: str,
     validator: Validator,
     transformer: Transformer,
+    on_submit: Callable[[object], None],
+    on_cancel: Callable[[], None],
     initial_value: str = "",
-    width: int = 520,
-    height: int = 360,
     entry_font: Optional[tuple] = None,
     entry_justify: str = "left",
-) -> object:
-    root = _build_window(window_title, width, height)
-    body = _create_dialog(root, badge_text, title, description)
+    initial_error: Optional[str] = None,
+) -> None:
+    body = _create_dialog(window, badge_text, title, description)
 
     tk.Label(
         body,
@@ -186,7 +187,7 @@ def _show_input_dialog(
         wraplength=420,
     ).pack(fill="x")
 
-    error_var = tk.StringVar(value="")
+    error_var = tk.StringVar(value=initial_error or "")
     tk.Label(
         body,
         textvariable=error_var,
@@ -200,8 +201,6 @@ def _show_input_dialog(
 
     actions = tk.Frame(body, bg=CARD_BG)
     actions.pack(fill="x", pady=(18, 0))
-
-    result = _CANCELLED
 
     def set_field_style(state: str = "default") -> None:
         if state == "error":
@@ -220,7 +219,6 @@ def _show_input_dialog(
         set_field_style()
 
     def submit(_event=None):
-        nonlocal result
         raw_value = input_var.get()
         error_message = validator(raw_value)
         if error_message:
@@ -228,12 +226,14 @@ def _show_input_dialog(
             set_field_style("error")
             return "break"
 
-        result = transformer(raw_value)
-        root.destroy()
+        value = transformer(raw_value)
+        window.destroy()
+        on_submit(value)
         return "break"
 
     def cancel(_event=None):
-        root.destroy()
+        window.destroy()
+        on_cancel()
         return "break"
 
     cancel_button = _build_button(actions, cancel_text, cancel, SECONDARY_BG, SECONDARY_HOVER, TEXT_PRIMARY)
@@ -247,16 +247,66 @@ def _show_input_dialog(
     entry.bind("<KeyRelease>", clear_error)
     entry.bind("<FocusIn>", lambda _event: set_field_style())
     entry.bind("<FocusOut>", lambda _event: set_field_style())
-    root.bind("<Escape>", cancel)
-    root.protocol("WM_DELETE_WINDOW", cancel)
+    window.bind("<Escape>", cancel)
+    window.protocol("WM_DELETE_WINDOW", cancel)
 
-    root.after(80, lambda: entry.focus_force())
+    window.after(80, lambda: entry.focus_force())
     if initial_value:
-        root.after(100, lambda: entry.select_range(0, tk.END))
+        window.after(100, lambda: entry.select_range(0, tk.END))
 
-    set_field_style()
+    if initial_error:
+        set_field_style("error")
+    else:
+        set_field_style()
+
+
+def _show_input_dialog(
+    *,
+    window_title: str,
+    badge_text: str,
+    title: str,
+    description: str,
+    field_label: str,
+    helper_text: str,
+    submit_text: str,
+    cancel_text: str,
+    validator: Validator,
+    transformer: Transformer,
+    initial_value: str = "",
+    width: int = 520,
+    height: int = 360,
+    entry_font: Optional[tuple] = None,
+    entry_justify: str = "left",
+) -> object:
+    root = _build_window(window_title, width, height)
+    result_holder = {"value": _CANCELLED}
+
+    def _on_submit(value: object) -> None:
+        result_holder["value"] = value
+
+    def _on_cancel() -> None:
+        return None
+
+    _build_input_dialog_widgets(
+        root,
+        badge_text=badge_text,
+        title=title,
+        description=description,
+        field_label=field_label,
+        helper_text=helper_text,
+        submit_text=submit_text,
+        cancel_text=cancel_text,
+        validator=validator,
+        transformer=transformer,
+        on_submit=_on_submit,
+        on_cancel=_on_cancel,
+        initial_value=initial_value,
+        entry_font=entry_font,
+        entry_justify=entry_justify,
+    )
+
     root.mainloop()
-    return result
+    return result_holder["value"]
 
 
 def _show_message_dialog(
@@ -428,6 +478,82 @@ class ProgressWindow:
     def mark_error(self, message: str) -> None:
         self._root.after(0, lambda: self._show_error(message))
 
+    def prompt_two_factor_code(
+        self,
+        error_message: Optional[str] = None,
+        timeout_seconds: float = 300.0,
+    ) -> Optional[str]:
+        """Worker-thread API: open a 2FA Toplevel on the main thread and block until submit/cancel."""
+
+        def validate(value: str) -> Optional[str]:
+            code = value.strip().replace(" ", "")
+            if not code:
+                return "確認コードを入力してください。"
+            if len(code) < 4:
+                return "Amazon から届いた確認コードをそのまま入力してください。"
+            return None
+
+        event = threading.Event()
+        result: dict = {"code": None}
+        dialog_holder: dict = {"top": None}
+
+        def _open_dialog() -> None:
+            top = tk.Toplevel(self._root)
+            dialog_holder["top"] = top
+            top.title("2段階認証")
+            top.configure(bg=WINDOW_BG)
+            top.resizable(False, False)
+            top.attributes("-topmost", True)
+            top.transient(self._root)
+            _center_window(top, 460, 360)
+
+            def on_submit(value: object) -> None:
+                result["code"] = cast(str, value)
+                event.set()
+
+            def on_cancel() -> None:
+                result["code"] = None
+                event.set()
+
+            _build_input_dialog_widgets(
+                top,
+                badge_text="SECURITY CHECK",
+                title="Amazon の確認コードを入力してください",
+                description="ログインを続行するために、メールや認証アプリに表示されたコードが必要です。",
+                field_label="確認コード",
+                helper_text="入力後に送信すると、ログイン処理を再開します。",
+                submit_text="コードを送信",
+                cancel_text="中止",
+                validator=validate,
+                transformer=lambda value: value.strip().replace(" ", ""),
+                on_submit=on_submit,
+                on_cancel=on_cancel,
+                entry_font=(FONT_CODE, 18, "bold"),
+                entry_justify="center",
+                initial_error=error_message,
+            )
+
+            try:
+                top.grab_set()
+            except tk.TclError:
+                pass
+
+        self._root.after(0, _open_dialog)
+        completed = event.wait(timeout=timeout_seconds)
+
+        if not completed:
+            def _force_close() -> None:
+                top = dialog_holder.get("top")
+                if top is not None:
+                    try:
+                        top.destroy()
+                    except tk.TclError:
+                        pass
+            self._root.after(0, _force_close)
+            return None
+
+        return result["code"]
+
     def run(self) -> None:
         self._root.mainloop()
 
@@ -510,7 +636,9 @@ def ask_book_limit(default: Optional[int] = None) -> Optional[int]:
     return cast(Optional[int], result)
 
 
-def prompt_two_factor_code() -> Optional[str]:
+def prompt_two_factor_code(error_message: Optional[str] = None) -> Optional[str]:
+    del error_message  # standalone fallback does not surface re-prompt errors
+
     def validate(value: str) -> Optional[str]:
         code = value.strip().replace(" ", "")
         if not code:

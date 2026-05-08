@@ -119,7 +119,12 @@ if __name__ == "__main__":
     def _worker():
         try:
             with sync_playwright() as p:
-                notes = run(p, max_books=max_books, progress_callback=window.update)
+                notes = run(
+                    p,
+                    max_books=max_books,
+                    progress_callback=window.update,
+                    two_factor_callback=window.prompt_two_factor_code,
+                )
             toNotion.save_notes_to_notion(
                 NOTION_API_KEY, NOTION_DATABASE_ID, notes,
                 progress_callback=window.update,
@@ -137,7 +142,9 @@ if __name__ == "__main__":
                 )
                 print("Saved notes to Google Sheets.")
             window.mark_done()
-        except Exception as e:
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:
             window.mark_error(str(e))
 
     thread = threading.Thread(target=_worker, daemon=True)

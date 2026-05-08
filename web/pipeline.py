@@ -27,10 +27,10 @@ class PipelineState:
     # 2FA bridge
     # ------------------------------------------------------------------
 
-    def request_two_factor(self):
+    def request_two_factor(self, error_message=None):
         """Called from the Playwright thread.  Blocks until a code arrives."""
         self.status = "waiting_2fa"
-        self._push_event("2fa_required", {})
+        self._push_event("2fa_required", {"error_message": error_message})
         self._two_factor_event.clear()
         self._two_factor_event.wait(timeout=300)  # 5 min
         code = self._two_factor_code
