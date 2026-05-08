@@ -13,6 +13,8 @@ NOTEBOOK_READY_SELECTOR = ".kp-notebook-library-each-book"
 LOAD_TIMEOUT = 15000
 NOTEBOOK_WAIT_TIMEOUT = 180000
 POLL_INTERVAL_SECONDS = 0.5
+MAX_2FA_ATTEMPTS = 5
+TWO_FACTOR_REJECTED_MESSAGE = "コードが誤っていました。もう一度入力してください。"
 
 
 def _is_visible(page, selector: str) -> bool:
@@ -65,8 +67,13 @@ def perform_login(page, amazon_email, amazon_password, two_factor_callback=None,
         # The page may already have an authenticated session.
         pass
 
-    try:
-        page.wait_for_selector(TWO_FACTOR_INPUT_SELECTOR, timeout=LOAD_TIMEOUT)
+    last_error: str | None = None
+    for _attempt in range(MAX_2FA_ATTEMPTS):
+        try:
+            page.wait_for_selector(TWO_FACTOR_INPUT_SELECTOR, timeout=LOAD_TIMEOUT)
+        except PlaywrightTimeoutError:
+            break
+
         if allow_manual_auth and two_factor_callback is None:
             _wait_for_notebook_ready(page)
             return
@@ -76,13 +83,20 @@ def perform_login(page, amazon_email, amazon_password, two_factor_callback=None,
 
             two_factor_callback = prompt_two_factor_code
 
-        code = two_factor_callback()
+        code = two_factor_callback(error_message=last_error)
         if code is None:
             raise SystemExit("Cancelled by user during two-factor authentication.")
 
         page.fill(TWO_FACTOR_INPUT_SELECTOR, code)
         page.click(TWO_FACTOR_SUBMIT_SELECTOR)
-    except PlaywrightTimeoutError:
-        pass
+
+        try:
+            page.wait_for_selector(TWO_FACTOR_INPUT_SELECTOR, state="hidden", timeout=LOAD_TIMEOUT)
+            break
+        except PlaywrightTimeoutError:
+            last_error = TWO_FACTOR_REJECTED_MESSAGE
+            continue
+    else:
+        raise SystemExit("2FA failed: maximum attempts exceeded.")
 
     _wait_for_notebook_ready(page)
