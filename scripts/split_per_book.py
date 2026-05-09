@@ -125,10 +125,47 @@ def _get_parent_folder(drive: AuthorizedSession, file_id: str) -> str:
     parents = r.json().get("parents") or []
     if not parents:
         raise SystemExit(
-            f"Master spreadsheet {file_id} appears to live in 'My Drive' root. "
-            "Move it into a folder before running this script."
+            f"Master spreadsheet {file_id} appears to live in 'My Drive' root "
+            "and its parent folder cannot be determined via the Drive API. "
+            "Either move it into a folder, or pass --parent-folder <folder_id> "
+            "to specify the destination folder directly."
         )
     return parents[0]
+
+
+def _validate_parent_folder(drive: AuthorizedSession, folder_id: str) -> None:
+    """Ensure ``folder_id`` is an accessible folder the service account can write to."""
+    r = drive.get(
+        f"{DRIVE_API}/files/{folder_id}",
+        params={"fields": "id,name,mimeType,capabilities(canAddChildren)"},
+    )
+    if r.status_code == 404:
+        raise SystemExit(
+            f"--parent-folder {folder_id!r} not found. "
+            "Check the ID, and make sure the folder is shared with the service account."
+        )
+    if r.status_code == 403:
+        raise SystemExit(
+            f"Service account cannot access folder {folder_id!r}. "
+            "Open the folder in Google Drive, click 'Share', and add the service "
+            "account email with Editor permission."
+        )
+    r.raise_for_status()
+    info = r.json()
+    mime = info.get("mimeType")
+    if mime != "application/vnd.google-apps.folder":
+        raise SystemExit(
+            f"--parent-folder {folder_id!r} points to "
+            f"{info.get('name', '?')!r} with mimeType={mime!r}, not a folder. "
+            "Pass a folder ID (find it in the URL when you open the folder: "
+            "drive.google.com/drive/folders/<FOLDER_ID>), not a spreadsheet/file ID."
+        )
+    if not info.get("capabilities", {}).get("canAddChildren", False):
+        raise SystemExit(
+            f"Service account lacks permission to create files in folder "
+            f"{info.get('name', folder_id)!r}. Share the folder with the "
+            "service account email and grant Editor access."
+        )
 
 
 def _find_or_create_subfolder(
@@ -186,19 +223,6 @@ def _list_spreadsheets_in_folder(
         if not page_token:
             break
     return out
-
-
-def _create_spreadsheet_in_folder(
-    drive: AuthorizedSession, parent_id: str, name: str
-) -> str:
-    body = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [parent_id],
-    }
-    r = drive.post(f"{DRIVE_API}/files", json=body)
-    r.raise_for_status()
-    return r.json()["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +286,18 @@ def main_cli() -> int:
         default=DEFAULT_SUBFOLDER_NAME,
         help=f"name of the per-book subfolder (default: {DEFAULT_SUBFOLDER_NAME!r})",
     )
+    parser.add_argument(
+        "--parent-folder",
+        metavar="FOLDER_ID",
+        default=None,
+        help=(
+            "Google Drive folder ID to create the per-book subfolder inside. "
+            "Use this when the master spreadsheet lives in 'My Drive' root and "
+            "the Drive API cannot determine its parent automatically. "
+            "Find the ID in the folder's URL: "
+            "drive.google.com/drive/folders/<FOLDER_ID>"
+        ),
+    )
     args = parser.parse_args()
 
     repo_main.load_config()
@@ -279,8 +315,13 @@ def main_cli() -> int:
     grouped = group_highlights_by_book(highlights)
     print(f"[master] {len(books)} books, {len(highlights)} highlights")
 
-    parent_id = _get_parent_folder(drive, repo_main.GOOGLE_SHEETS_SPREADSHEET_ID)
-    print(f"[parent] folder id = {parent_id}")
+    if args.parent_folder:
+        parent_id = args.parent_folder
+        _validate_parent_folder(drive, parent_id)
+        print(f"[parent] folder id = {parent_id}  (from --parent-folder)")
+    else:
+        parent_id = _get_parent_folder(drive, repo_main.GOOGLE_SHEETS_SPREADSHEET_ID)
+        print(f"[parent] folder id = {parent_id}")
 
     sub_id = _find_or_create_subfolder(drive, parent_id, args.folder, dry_run=not args.apply)
     if sub_id is None:
@@ -290,9 +331,10 @@ def main_cli() -> int:
 
     existing = _list_spreadsheets_in_folder(drive, sub_id) if sub_id else {}
 
-    plan_create = 0
     plan_update = 0
     plan_skip = 0
+    plan_missing = 0
+    missing_filenames: list[str] = []
 
     for book in books:
         bid = book["book_id"].strip()
@@ -310,28 +352,34 @@ def main_cli() -> int:
 
         if existing_id:
             plan_update += 1
-            action = "update"
+            if args.apply:
+                _write_per_book(gc, existing_id, rows)
+                print(f"  [update ] {fname}  ({len(hl)} highlights)  id={existing_id}")
+            else:
+                print(f"  [update ] {fname}  ({len(hl)} highlights)")
         else:
-            plan_create += 1
-            action = "create"
-
-        if not args.apply:
-            print(f"  [{action:6s}] {fname}  ({len(hl)} highlights)")
-            continue
-
-        if existing_id:
-            file_id = existing_id
-        else:
-            file_id = _create_spreadsheet_in_folder(drive, sub_id, fname)
-        _write_per_book(gc, file_id, rows)
-        print(f"  [{action:6s}] {fname}  ({len(hl)} highlights)  id={file_id}")
+            plan_missing += 1
+            missing_filenames.append(fname)
+            tag = "missing" if args.apply else "create "
+            print(f"  [{tag}] {fname}  ({len(hl)} highlights)")
 
     print(
-        f"\n[summary] create={plan_create}  update={plan_update}  "
+        f"\n[summary] update={plan_update}  missing={plan_missing}  "
         f"skip(no_highlights)={plan_skip}"
     )
+    if missing_filenames:
+        print(
+            f"\n{plan_missing} per-book file(s) are not yet in the "
+            f"'{args.folder}' folder. Create them manually as Google Sheets "
+            "with these EXACT names (no extension):"
+        )
+        for f in missing_filenames:
+            print(f"  - {f}")
+        print(
+            f"\nThen re-run the script. Existing rows will be overwritten on update."
+        )
     if not args.apply:
-        print("(dry-run) re-run with --apply to write to Drive.")
+        print("\n(dry-run) re-run with --apply to write content to existing files.")
     return 0
 
 
