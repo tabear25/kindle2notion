@@ -1,4 +1,14 @@
+"""Scrape Kindle Notebook highlights via Playwright.
+
+Each emitted note dict now carries the v2 identifiers as well, so downstream
+writers (``google_sheets/toSheets.py``) can stay deterministic without
+having to re-derive them.
+"""
+
 import re
+from collections import defaultdict
+
+from note_utils import stable_book_id
 
 NOTEBOOK_URL = "https://read.amazon.co.jp/notebook"
 BOOK_SELECTOR = ".kp-notebook-library-each-book"
@@ -19,7 +29,8 @@ def extract_notes(page, max_books=None, progress_callback=None):
 
     books = _get_book_elements(page)
     total_books = len(books) if max_books is None else min(len(books), max_books)
-    notes = []
+    notes: list[dict] = []
+    per_book_index: dict[str, int] = defaultdict(int)
 
     for index in range(total_books):
         books = _get_book_elements(page)
@@ -33,6 +44,8 @@ def extract_notes(page, max_books=None, progress_callback=None):
         else:
             book_title = f"Unknown Book {index + 1}"
             print(f"Warning: title not found for book {index + 1}.")
+
+        book_id = stable_book_id(book_title)
 
         if progress_callback:
             progress_callback(
@@ -49,18 +62,22 @@ def extract_notes(page, max_books=None, progress_callback=None):
                 continue
 
             page_info_element = highlight.query_selector(PAGE_INFO_SELECTOR)
-            page_number = ""
+            location_value = ""
             if page_info_element:
                 page_info_text = (page_info_element.text_content() or "").strip()
                 match = re.search(r"\d+", page_info_text)
                 if match:
-                    page_number = match.group(0)
+                    location_value = match.group(0)
 
+            per_book_index[book_id] += 1
             notes.append(
                 {
                     "title": book_title,
                     "content": content,
-                    "page": page_number,
+                    "page": location_value,
+                    "location": location_value,
+                    "book_id": book_id,
+                    "idx_within_book": per_book_index[book_id],
                 }
             )
 

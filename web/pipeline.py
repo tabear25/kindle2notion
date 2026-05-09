@@ -103,7 +103,6 @@ def run_pipeline(state, max_books):
             toSheets.save_notes_to_google_sheets(
                 main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
                 main.GOOGLE_SHEETS_SPREADSHEET_ID,
-                main.GOOGLE_SHEETS_WORKSHEET_NAME,
                 notes,
                 progress_callback=state.progress_callback,
             )

@@ -95,6 +95,38 @@ Google Sheets 保存は任意です。使わない場合は設定不要です。
 
 Spreadsheet ID は URL の `/d/<SPREADSHEET_ID>/edit` の部分です。
 
+#### Sheets スキーマ (v2)
+
+このリポジトリは AI 検索しやすい多シート構成で書き込みます。シート名は固定で、`google_sheets/toSheets.py` が自動的に作成・ヘッダ修復します。
+
+| シート名 | 1 行の意味 | 書き込む側 |
+| --- | --- | --- |
+| `01_books` | 1 書籍 | **kindle2notion** |
+| `02_highlights` | 1 ハイライト | **kindle2notion** |
+| `03_book_summary` | 1 書籍の AI 要約 | Claude (任意・別途) |
+| `04_highlight_tags` | 1 ハイライト × 1 タグ (long 形式) | Claude (任意・別途) |
+| `05_tags_taxonomy` | タグ語彙 | 人間 + Claude |
+
+主キー:
+
+- `book_id` = `BK-` + SHA1(title)\[0:6\] (大文字)。タイトル文字列が変わらない限り安定。
+- `highlight_id` = `HL-<book6>-<NNNN>` (NNNN は書籍内 1 始まり連番)。
+- 重複判定キーは `(book_id, sha1(content))`。
+
+不変条件 (絶対):
+
+1. `kindle2notion` は `01_books` と `02_highlights` のみ書き込む。
+2. AI が埋める `03` / `04` / `05` には一切触れない。
+3. 旧 `Sheet1` は read-only。書き換えない。
+4. 既存行の `book_id` / `highlight_id` を後から書き換えない (移行スクリプトで一発で確定する)。
+
+旧 `Sheet1` から v2 へのワンショット移行は `scripts/migrate_legacy_sheet.py` で行えます。
+
+```bash
+python -m scripts.migrate_legacy_sheet            # dry-run
+python -m scripts.migrate_legacy_sheet --apply    # 実行
+```
+
 ### 5. `config/KEYS.env` を設定する
 
 `config/KEYS.env` に必要情報を記入してください。
@@ -108,10 +140,9 @@ AMAZON_PASSWORD=
 NOTION_API_KEY=
 NOTION_DATABASE_ID=
 
-# Google Sheets を使う場合のみ設定
+# Google Sheets を使う場合のみ設定 (シート名は v2 で固定なので WORKSHEET_NAME は廃止)
 GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=
 GOOGLE_SHEETS_SPREADSHEET_ID=
-GOOGLE_SHEETS_WORKSHEET_NAME=Sheet1
 
 # Web UI に Basic 認証を付けたい場合のみ設定
 WEB_USERNAME=
