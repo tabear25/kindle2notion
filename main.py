@@ -22,7 +22,6 @@ NOTION_DATABASE_ID = None
 GOOGLE_SHEETS_ENABLED = False
 GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE = None
 GOOGLE_SHEETS_SPREADSHEET_ID = None
-GOOGLE_SHEETS_WORKSHEET_NAME = "Sheet1"
 
 
 def load_config():
@@ -30,7 +29,7 @@ def load_config():
     global _config_loaded
     global AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID
     global GOOGLE_SHEETS_ENABLED, GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE
-    global GOOGLE_SHEETS_SPREADSHEET_ID, GOOGLE_SHEETS_WORKSHEET_NAME
+    global GOOGLE_SHEETS_SPREADSHEET_ID
 
     if _config_loaded:
         return
@@ -42,7 +41,8 @@ def load_config():
     NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
     google_sheets_saf_env = os.getenv("GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE")
     GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
-    GOOGLE_SHEETS_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Sheet1")
+    # Worksheet names are now fixed by the v2 schema (01_books / 02_highlights);
+    # GOOGLE_SHEETS_WORKSHEET_NAME from KEYS.env is intentionally ignored.
 
     required_env_vars = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
     if not all(required_env_vars):
@@ -136,7 +136,6 @@ if __name__ == "__main__":
                 toSheets.save_notes_to_google_sheets(
                     GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
                     GOOGLE_SHEETS_SPREADSHEET_ID,
-                    GOOGLE_SHEETS_WORKSHEET_NAME,
                     notes,
                     progress_callback=window.update,
                 )

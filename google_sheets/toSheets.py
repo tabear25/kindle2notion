@@ -1,17 +1,49 @@
+"""Write Kindle highlights to Google Sheets in the v2 multi-sheet schema.
+
+Two worksheets are managed by this module:
+
+* ``01_books``      -- one row per book.
+* ``02_highlights`` -- one row per highlight, FK ``book_id`` -> ``01_books``.
+
+Other worksheets that may exist in the same spreadsheet (``03_book_summary``,
+``04_highlight_tags``, ``05_tags_taxonomy``, ``00_README``, the legacy
+``Sheet1``) are **never** read or modified here.
+
+This module intentionally adds **no external AI/API dependency** beyond
+``gspread`` + ``google-auth`` that the project already required.
+"""
+
+from __future__ import annotations
+
 import json
+from typing import Iterable
 
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 from tqdm import tqdm
 
-from note_utils import build_note_key, build_note_key_from_note, has_any_note_value, note_to_row
+from note_utils import (
+    BOOKS_HEADERS,
+    HIGHLIGHTS_HEADERS,
+    content_dedup_key,
+    highlight_id,
+    note_to_book_row,
+    note_to_highlight_row,
+    stable_book_id,
+    today_iso,
+)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
-HEADERS = ["Title", "Content", "Page"]
+
+BOOKS_SHEET = "01_books"
+HIGHLIGHTS_SHEET = "02_highlights"
+
+_BOOKS_DEFAULT_ROWS = 200
+_HIGHLIGHTS_DEFAULT_ROWS = 5000
 
 
 def _build_client(service_account_file):
@@ -33,58 +65,179 @@ def _build_client(service_account_file):
     return gspread.authorize(credentials)
 
 
-def _get_or_create_worksheet(spreadsheet, worksheet_name):
+def _get_or_create_worksheet(spreadsheet, name: str, headers: list, default_rows: int):
+    """Return the worksheet, creating it (with header row) if missing."""
     try:
-        worksheet = spreadsheet.worksheet(worksheet_name)
+        worksheet = spreadsheet.worksheet(name)
+        first_row = worksheet.row_values(1)
+        if not first_row:
+            worksheet.update("A1", [headers], value_input_option="RAW")
+        return worksheet
     except WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=10)
-    return worksheet
+        worksheet = spreadsheet.add_worksheet(
+            title=name, rows=default_rows, cols=max(len(headers), 10)
+        )
+        worksheet.update("A1", [headers], value_input_option="RAW")
+        return worksheet
 
 
-def _ensure_header_row(worksheet):
-    first_row = worksheet.row_values(1)
-    if not first_row:
-        worksheet.append_row(HEADERS, value_input_option="RAW")
+def _row_to_dict(row, headers):
+    padded = (list(row) + [""] * len(headers))[: len(headers)]
+    return dict(zip(headers, padded))
 
 
-def _get_existing_note_keys(worksheet):
+def _load_books(worksheet) -> dict:
+    """Return ``{book_id: row_dict}`` for every existing book row."""
     rows = worksheet.get_all_values()
     if not rows:
-        return set()
+        return {}
+    start = 1 if rows[0][: len(BOOKS_HEADERS)] == BOOKS_HEADERS else 0
+    out: dict = {}
+    for row in rows[start:]:
+        if not any(c.strip() for c in row):
+            continue
+        d = _row_to_dict(row, BOOKS_HEADERS)
+        bid = d.get("book_id", "").strip()
+        if bid:
+            out[bid] = d
+    return out
 
-    start_index = 1 if rows[0][: len(HEADERS)] == HEADERS else 0
-    note_keys = set()
-    for row in rows[start_index:]:
-        padded_row = (row + ["", "", ""])[: len(HEADERS)]
-        if has_any_note_value(padded_row):
-            note_keys.add(build_note_key(*padded_row))
-    return note_keys
 
+def _load_highlight_state(worksheet):
+    """Return (dedup_set, max_idx_per_book) from ``02_highlights``."""
+    rows = worksheet.get_all_values()
+    if not rows:
+        return set(), {}
+    start = 1 if rows[0][: len(HIGHLIGHTS_HEADERS)] == HIGHLIGHTS_HEADERS else 0
 
-def save_notes_to_google_sheets(service_account_file, spreadsheet_id, worksheet_name, notes, progress_callback=None):
-    client = _build_client(service_account_file)
-    spreadsheet = client.open_by_key(spreadsheet_id)
-    worksheet = _get_or_create_worksheet(spreadsheet, worksheet_name)
-    _ensure_header_row(worksheet)
-    existing_note_keys = _get_existing_note_keys(worksheet)
+    dedup = set()
+    max_idx = {}
 
-    rows_to_append = []
-    for i, note in enumerate(tqdm(notes, desc="Sheets")):
-        if progress_callback:
-            progress_callback("sheets", i + 1, len(notes), note.get("title", ""))
-
-        note_key = build_note_key_from_note(note)
-        if not note_key[1] or note_key in existing_note_keys:
+    for row in rows[start:]:
+        if not any(c.strip() for c in row):
+            continue
+        d = _row_to_dict(row, HIGHLIGHTS_HEADERS)
+        bid = d.get("book_id", "").strip()
+        content = d.get("content", "").strip()
+        hid = d.get("highlight_id", "").strip()
+        if not bid or not content:
             continue
 
-        rows_to_append.append(note_to_row(note))
-        existing_note_keys.add(note_key)
+        dedup.add(content_dedup_key(bid, content))
 
-    if not rows_to_append:
+        if hid.startswith("HL-") and "-" in hid[3:]:
+            tail = hid.rsplit("-", 1)[-1]
+            if tail.isdigit():
+                idx = int(tail)
+                if idx > max_idx.get(bid, 0):
+                    max_idx[bid] = idx
+
+    return dedup, max_idx
+
+
+def save_notes_to_google_sheets(
+    service_account_file,
+    spreadsheet_id,
+    notes: Iterable,
+    progress_callback=None,
+):
+    """Append new books / highlights to the v2 schema worksheets."""
+    notes = list(notes)
+    client = _build_client(service_account_file)
+    spreadsheet = client.open_by_key(spreadsheet_id)
+
+    books_ws = _get_or_create_worksheet(
+        spreadsheet, BOOKS_SHEET, BOOKS_HEADERS, _BOOKS_DEFAULT_ROWS
+    )
+    highlights_ws = _get_or_create_worksheet(
+        spreadsheet, HIGHLIGHTS_SHEET, HIGHLIGHTS_HEADERS, _HIGHLIGHTS_DEFAULT_ROWS
+    )
+
+    existing_books = _load_books(books_ws)
+    existing_dedup, max_idx = _load_highlight_state(highlights_ws)
+
+    today = today_iso()
+    new_book_rows = []
+    new_highlight_rows = []
+    touched_books = {}
+
+    total = len(notes)
+    for i, note in enumerate(tqdm(notes, desc="Sheets")):
+        if progress_callback:
+            progress_callback("sheets", i + 1, total, note.get("title", ""))
+
+        title = (note.get("title") or "").strip()
+        content = (note.get("content") or "").strip()
+        if not title or not content:
+            continue
+
+        bid = note.get("book_id") or stable_book_id(title)
+
+        if bid not in existing_books:
+            new_book_rows.append(note_to_book_row(bid, title, today))
+            existing_books[bid] = {"first_synced_at": today, "highlight_count": "0"}
+        touched_books.setdefault(bid, 0)
+
+        key = content_dedup_key(bid, content)
+        if key in existing_dedup:
+            continue
+
+        max_idx[bid] = max_idx.get(bid, 0) + 1
+        supplied_idx = note.get("idx_within_book")
+        if isinstance(supplied_idx, int) and supplied_idx > max_idx[bid]:
+            max_idx[bid] = supplied_idx
+
+        hid = highlight_id(bid, max_idx[bid])
+        new_highlight_rows.append(note_to_highlight_row(hid, bid, note, today))
+        existing_dedup.add(key)
+        touched_books[bid] += 1
+
+    if new_book_rows:
+        try:
+            books_ws.append_rows(new_book_rows, value_input_option="RAW")
+        except Exception as e:
+            print(f"Failed to append {len(new_book_rows)} rows to {BOOKS_SHEET}: {e}")
+
+    if new_highlight_rows:
+        try:
+            highlights_ws.append_rows(new_highlight_rows, value_input_option="RAW")
+        except Exception as e:
+            print(
+                f"Failed to append {len(new_highlight_rows)} rows to {HIGHLIGHTS_SHEET}: {e}"
+            )
+
+    if touched_books:
+        try:
+            _refresh_book_meta(books_ws, touched_books, today)
+        except Exception as e:
+            print(f"Failed to refresh book metadata on {BOOKS_SHEET}: {e}")
+
+
+def _refresh_book_meta(books_ws, touched_books: dict, today: str) -> None:
+    """Update highlight_count + last_synced_at columns for touched books."""
+    rows = books_ws.get_all_values()
+    if not rows:
         return
+    start = 1 if rows[0][: len(BOOKS_HEADERS)] == BOOKS_HEADERS else 0
 
-    try:
-        worksheet.append_rows(rows_to_append, value_input_option="RAW")
-    except Exception as e:
-        failed_count = len(rows_to_append)
-        print(f"Failed to save notes to Google Sheets ({failed_count} rows): {e}")
+    count_col = BOOKS_HEADERS.index("highlight_count") + 1
+    sync_col = BOOKS_HEADERS.index("last_synced_at") + 1
+
+    updates = []
+    for r_offset, row in enumerate(rows[start:], start=start + 1):
+        d = _row_to_dict(row, BOOKS_HEADERS)
+        bid = d.get("book_id", "").strip()
+        if not bid or bid not in touched_books:
+            continue
+        try:
+            current = int(d.get("highlight_count") or 0)
+        except ValueError:
+            current = 0
+        new_count = current + touched_books[bid]
+        col_letter_count = gspread.utils.rowcol_to_a1(r_offset, count_col)
+        col_letter_sync = gspread.utils.rowcol_to_a1(r_offset, sync_col)
+        updates.append({"range": col_letter_count, "values": [[new_count]]})
+        updates.append({"range": col_letter_sync, "values": [[today]]})
+
+    if updates:
+        books_ws.batch_update(updates, value_input_option="RAW")
