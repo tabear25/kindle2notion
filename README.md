@@ -3,6 +3,8 @@
 Kindle Notebook のハイライトを取得し、Notion データベースへ保存するツールです。  
 必要に応じて Google Sheets にも同時保存できます。
 
+> 📘 **はじめての方 (Windows ユーザー向け / 完全初心者OK)**: [SETUP_GUIDE.md](./SETUP_GUIDE.md) を上から順に読めば、ゼロから「スマホで URL アクセスできる状態」まで到達できます。
+
 現在は次の 2 つの起動方法に対応しています。
 
 - `python main.py`
