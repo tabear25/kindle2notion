@@ -43,8 +43,6 @@ def load_config():
     NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
     google_sheets_saf_env = os.getenv("GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE")
     GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
-    # Worksheet names are now fixed by the v2 schema (01_books / 02_highlights);
-    # GOOGLE_SHEETS_WORKSHEET_NAME from KEYS.env is intentionally ignored.
 
     required_env_vars = [AMAZON_EMAIL, AMAZON_PASSWORD, NOTION_API_KEY, NOTION_DATABASE_ID]
     if not all(required_env_vars):
