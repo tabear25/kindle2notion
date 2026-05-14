@@ -8,11 +8,13 @@ from playwright.sync_api import sync_playwright
 import amazon.login
 from book_transformer import transformer
 from config import BASE_DIR, load_env_file
+from local_export import toLocal
 from notion import toNotion
 
 nest_asyncio.apply()
 
 STORAGE_STATE_PATH = BASE_DIR / "storage_state.json"
+LOCAL_EXPORT_DIR = BASE_DIR / toLocal.DEFAULT_OUTPUT_DIRNAME
 
 _config_loaded = False
 AMAZON_EMAIL = None
@@ -130,6 +132,12 @@ if __name__ == "__main__":
                 progress_callback=window.update,
             )
             print("Saved notes to Notion.")
+            toLocal.save_notes_to_local_markdown(
+                LOCAL_EXPORT_DIR,
+                notes,
+                progress_callback=window.update,
+            )
+            print(f"Saved highlights to {LOCAL_EXPORT_DIR}.")
             if GOOGLE_SHEETS_ENABLED:
                 from google_sheets import toSheets
 

@@ -7,3 +7,4 @@ config/KEYS.env
 storage_state.json
 CODEX_KEY_CONTEXT.md
 .claude/
+highlights/

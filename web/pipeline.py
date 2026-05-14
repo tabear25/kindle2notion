@@ -5,6 +5,7 @@ import traceback
 from playwright.sync_api import sync_playwright
 
 import main
+from local_export import toLocal
 from notion import toNotion
 
 
@@ -93,6 +94,12 @@ def run_pipeline(state, max_books):
         toNotion.save_notes_to_notion(
             main.NOTION_API_KEY,
             main.NOTION_DATABASE_ID,
+            notes,
+            progress_callback=state.progress_callback,
+        )
+
+        toLocal.save_notes_to_local_markdown(
+            main.LOCAL_EXPORT_DIR,
             notes,
             progress_callback=state.progress_callback,
         )
