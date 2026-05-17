@@ -1,15 +1,25 @@
-"""Split master ``reading_note`` into per-book Sheets files for NotebookLM.
+"""Split master ``reading_note`` into fixed NotebookLM volume files.
 
-NotebookLM only ingests the **first** worksheet of each spreadsheet.
-This script reads the v2 master schema (``01_books`` + ``02_highlights``),
-groups highlights by book, and writes / refreshes one Google Sheets file
-per book inside a ``per_book/`` subfolder next to the master spreadsheet.
+NotebookLM caps a notebook at 50 sources, so a "one Sheets file per book"
+layout breaks at the 51st book. This script instead writes a **fixed**
+set of files regardless of how many books exist:
+
+- 49 *volume* files, each holding many books.
+- 1 *index* file mapping every book to the volume that contains it.
+
+Total = 50 files, forever. Each book is pinned to a volume by a stable
+hash of its ``book_id`` (see ``volume_for_book_id``), so re-runs never
+move a book between volumes and the operation is effectively append-only.
+
+It reads the v2 master schema (``01_books`` + ``02_highlights``) and
+writes / refreshes the 50 files inside a ``notebooklm/`` subfolder next
+to the master spreadsheet.
 
 Usage::
 
     python -m scripts.split_per_book                   # dry-run
     python -m scripts.split_per_book --apply           # actually write
-    python -m scripts.split_per_book --apply --folder per_book
+    python -m scripts.split_per_book --apply --folder notebooklm
 
 Design notes:
 
@@ -17,17 +27,24 @@ Design notes:
 - No new external API / AI dependency.  Drive API calls go through
   ``google.auth.transport.requests.AuthorizedSession`` which is already a
   transitive dep of ``google-auth``.
-- Idempotent: each per-book file is rewritten in full from the master.
-  The master itself is **never** modified.
-- Filename rule: ``<book_id>__<sanitised title>`` (Google-native sheets
-  have no file extension).
+- Idempotent: every volume / index file is rewritten in full from the
+  master.  The master itself is **never** modified.
+- Filenames are fixed: ``<prefix>_index`` and ``<prefix>_vol_01`` ..
+  ``<prefix>_vol_49``.  Service Accounts cannot create Drive files, so the
+  user creates these 50 empty Sheets **once**; new books afterwards need
+  no new files.
+- Each volume row is self-describing (``book_id`` + ``book_title`` on
+  every row) so NotebookLM cannot mis-attribute a highlight when a single
+  file holds multiple books.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -47,12 +64,21 @@ except Exception:  # pragma: no cover -- only hit during test collection
     _RUNTIME_DEPS_OK = False
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
-DEFAULT_SUBFOLDER_NAME = "per_book"
 
-# Columns on the per-book sheet (kept minimal so NotebookLM ingestion is clean).
-PER_BOOK_HEADERS = ["highlight_id", "location", "content"]
+# Fixed layout: 49 volume files + 1 index file = 50 NotebookLM sources.
+VOLUME_COUNT = 49
+DEFAULT_SUBFOLDER_NAME = "notebooklm"
+DEFAULT_FILENAME_PREFIX = "k2n"
 
-# Maximum length for the title portion of the filename (book_id stays full).
+# Columns on each volume sheet. ``book_id`` + ``book_title`` make every row
+# self-describing so NotebookLM keeps book context even when one file holds
+# multiple books.
+VOLUME_HEADERS = ["book_id", "book_title", "highlight_id", "location", "content"]
+
+# Columns on the index sheet (book -> volume lookup + catalogue).
+INDEX_HEADERS = ["book_id", "title", "volume", "highlight_count", "last_synced_at"]
+
+# Maximum length for the title portion of the index ``title`` column.
 TITLE_MAX_LEN = 80
 
 
@@ -68,13 +94,114 @@ def safe_title_for_filename(title: str, max_len: int = TITLE_MAX_LEN) -> str:
     return cleaned[:max_len].rstrip()
 
 
-def per_book_filename(book_id: str, title: str) -> str:
-    """``BK-XXXXXX__<safe_title>``.
+def volume_for_book_id(book_id: str, volume_count: int = VOLUME_COUNT) -> int:
+    """Return the 1-based volume index (1..volume_count) for a book.
 
-    The filename does not include an extension; Google Sheets is a native
-    Drive type so no extension is needed.
+    Deterministic across machines and re-runs: ``SHA1(book_id) % N + 1``.
+    This formula is load-bearing -- once books have been written, changing
+    it (or ``VOLUME_COUNT``) re-shuffles every book and forces a full
+    NotebookLM re-import.
     """
-    return f"{book_id}__{safe_title_for_filename(title)}"
+    digest = hashlib.sha1((book_id or "").strip().encode("utf-8")).hexdigest()
+    return int(digest, 16) % volume_count + 1
+
+
+def volume_filename(prefix: str, volume_index: int) -> str:
+    """``<prefix>_vol_NN`` (no extension; Google Sheets is a native type)."""
+    return f"{prefix}_vol_{volume_index:02d}"
+
+
+def index_filename(prefix: str) -> str:
+    """``<prefix>_index`` (no extension)."""
+    return f"{prefix}_index"
+
+
+def all_target_filenames(prefix: str, volume_count: int = VOLUME_COUNT) -> list[str]:
+    """The fixed set of file names: the index first, then every volume."""
+    return [index_filename(prefix)] + [
+        volume_filename(prefix, v) for v in range(1, volume_count + 1)
+    ]
+
+
+def group_books_by_volume(
+    books: list[dict], volume_count: int = VOLUME_COUNT
+) -> dict[int, list[dict]]:
+    """Bucket ``01_books`` row-dicts into volumes 1..volume_count.
+
+    Every volume key is present (empty volumes map to an empty list) so
+    callers can iterate the full fixed range. Rows with a blank ``book_id``
+    are skipped.
+    """
+    out: dict[int, list[dict]] = {v: [] for v in range(1, volume_count + 1)}
+    for book in books:
+        bid = (book.get("book_id") or "").strip()
+        if not bid:
+            continue
+        out[volume_for_book_id(bid, volume_count)].append(book)
+    return out
+
+
+def volume_rows(
+    books_in_volume: list[dict], highlights_by_book: dict[str, list[dict]]
+) -> list[list[str]]:
+    """Header + body for one volume worksheet.
+
+    Books are sorted by ``book_id`` and highlights within a book by
+    ``highlight_id`` so the output is byte-stable across re-runs. The
+    ``book_title`` comes from the book row (consistent for every row of a
+    book); ``location`` falls back to ``page``.
+    """
+    rows: list[list[str]] = [VOLUME_HEADERS]
+    for book in sorted(books_in_volume, key=lambda b: (b.get("book_id") or "").strip()):
+        bid = (book.get("book_id") or "").strip()
+        btitle = (book.get("title") or "").strip()
+        highlights = sorted(
+            highlights_by_book.get(bid, []),
+            key=lambda h: (h.get("highlight_id") or "").strip(),
+        )
+        for hl in highlights:
+            rows.append(
+                [
+                    bid,
+                    btitle,
+                    (hl.get("highlight_id") or "").strip(),
+                    (hl.get("location") or hl.get("page") or "").strip(),
+                    (hl.get("content") or "").strip(),
+                ]
+            )
+    return rows
+
+
+def index_rows(
+    books: list[dict],
+    highlights_by_book: dict[str, list[dict]],
+    prefix: str,
+    volume_count: int = VOLUME_COUNT,
+) -> list[list[str]]:
+    """Header + one row per book for the index worksheet.
+
+    ``volume`` is the volume *filename* (more useful than a bare number).
+    ``highlight_count`` prefers ``01_books.highlight_count`` and falls back
+    to the number of highlights actually grouped for the book.
+    """
+    rows: list[list[str]] = [INDEX_HEADERS]
+    for book in sorted(books, key=lambda b: (b.get("book_id") or "").strip()):
+        bid = (book.get("book_id") or "").strip()
+        if not bid:
+            continue
+        count = (book.get("highlight_count") or "").strip()
+        if not count:
+            count = str(len(highlights_by_book.get(bid, [])))
+        rows.append(
+            [
+                bid,
+                safe_title_for_filename(book.get("title") or ""),
+                volume_filename(prefix, volume_for_book_id(bid, volume_count)),
+                count,
+                (book.get("last_synced_at") or "").strip(),
+            ]
+        )
+    return rows
 
 
 def group_highlights_by_book(highlight_rows: list[dict]) -> dict[str, list[dict]]:
@@ -86,19 +213,6 @@ def group_highlights_by_book(highlight_rows: list[dict]) -> dict[str, list[dict]
             continue
         out.setdefault(bid, []).append(row)
     return out
-
-
-def per_book_rows(highlights_for_book: list[dict]) -> list[list[str]]:
-    """Header + body for the per-book worksheet."""
-    body = [
-        [
-            (h.get("highlight_id") or "").strip(),
-            (h.get("location") or h.get("page") or "").strip(),
-            (h.get("content") or "").strip(),
-        ]
-        for h in highlights_for_book
-    ]
-    return [PER_BOOK_HEADERS, *body]
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +372,7 @@ def _load_master(gc, spreadsheet_id: str) -> tuple[list[dict], list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-def _write_per_book(gc, file_id: str, header_and_rows: list[list[str]]) -> None:
+def _write_volume(gc, file_id: str, header_and_rows: list[list[str]]) -> None:
     """Replace sheet 1 of ``file_id`` with the supplied rows."""
     sh = gc.open_by_key(file_id)
     ws = sh.sheet1
@@ -284,14 +398,24 @@ def main_cli() -> int:
     parser.add_argument(
         "--folder",
         default=DEFAULT_SUBFOLDER_NAME,
-        help=f"name of the per-book subfolder (default: {DEFAULT_SUBFOLDER_NAME!r})",
+        help=f"name of the destination subfolder (default: {DEFAULT_SUBFOLDER_NAME!r})",
+    )
+    parser.add_argument(
+        "--prefix",
+        default=DEFAULT_FILENAME_PREFIX,
+        help=(
+            "filename prefix for the volume / index files "
+            f"(default: {DEFAULT_FILENAME_PREFIX!r}; produces "
+            f"'{DEFAULT_FILENAME_PREFIX}_index' and "
+            f"'{DEFAULT_FILENAME_PREFIX}_vol_01'..)"
+        ),
     )
     parser.add_argument(
         "--parent-folder",
         metavar="FOLDER_ID",
         default=None,
         help=(
-            "Google Drive folder ID to create the per-book subfolder inside. "
+            "Google Drive folder ID to create the destination subfolder inside. "
             "Use this when the master spreadsheet lives in 'My Drive' root and "
             "the Drive API cannot determine its parent automatically. "
             "Find the ID in the folder's URL: "
@@ -312,8 +436,13 @@ def main_cli() -> int:
     gc = gspread.authorize(creds)
 
     books, highlights = _load_master(gc, repo_main.GOOGLE_SHEETS_SPREADSHEET_ID)
-    grouped = group_highlights_by_book(highlights)
+    highlights_by_book = group_highlights_by_book(highlights)
+    books_by_volume = group_books_by_volume(books)
     print(f"[master] {len(books)} books, {len(highlights)} highlights")
+    print(
+        f"[layout] {VOLUME_COUNT} volumes + 1 index = {VOLUME_COUNT + 1} files, "
+        f"prefix '{args.prefix}'"
+    )
 
     if args.parent_folder:
         parent_id = args.parent_folder
@@ -331,52 +460,63 @@ def main_cli() -> int:
 
     existing = _list_spreadsheets_in_folder(drive, sub_id) if sub_id else {}
 
+    # Build the fixed set of (filename, rows, label) targets: index first.
+    targets: list[tuple[str, list[list[str]], str]] = [
+        (
+            index_filename(args.prefix),
+            index_rows(books, highlights_by_book, args.prefix),
+            f"{len(books)} books",
+        )
+    ]
+    for v in range(1, VOLUME_COUNT + 1):
+        vbooks = books_by_volume[v]
+        nhl = sum(len(highlights_by_book.get((b.get("book_id") or "").strip(), [])) for b in vbooks)
+        targets.append(
+            (
+                volume_filename(args.prefix, v),
+                volume_rows(vbooks, highlights_by_book),
+                f"{len(vbooks)} books, {nhl} highlights",
+            )
+        )
+
     plan_update = 0
-    plan_skip = 0
     plan_missing = 0
     missing_filenames: list[str] = []
 
-    for book in books:
-        bid = book["book_id"].strip()
-        title = book["title"].strip()
-        if not bid or not title:
-            continue
-        hl = grouped.get(bid, [])
-        if not hl:
-            plan_skip += 1
-            continue
-
-        fname = per_book_filename(bid, title)
-        rows = per_book_rows(hl)
+    for fname, rows, label in targets:
         existing_id = existing.get(fname)
-
         if existing_id:
             plan_update += 1
             if args.apply:
-                _write_per_book(gc, existing_id, rows)
-                print(f"  [update ] {fname}  ({len(hl)} highlights)  id={existing_id}")
+                _write_volume(gc, existing_id, rows)
+                print(f"  [update ] {fname}  ({label})  id={existing_id}")
             else:
-                print(f"  [update ] {fname}  ({len(hl)} highlights)")
+                print(f"  [update ] {fname}  ({label})")
         else:
             plan_missing += 1
             missing_filenames.append(fname)
             tag = "missing" if args.apply else "create "
-            print(f"  [{tag}] {fname}  ({len(hl)} highlights)")
+            print(f"  [{tag}] {fname}  ({label})")
 
+    volume_book_counts = [len(books_by_volume[v]) for v in range(1, VOLUME_COUNT + 1)]
     print(
-        f"\n[summary] update={plan_update}  missing={plan_missing}  "
-        f"skip(no_highlights)={plan_skip}"
+        f"\n[distribution] books per volume -- min={min(volume_book_counts)} "
+        f"median={statistics.median(volume_book_counts):g} "
+        f"max={max(volume_book_counts)}"
     )
+    print(f"[summary] update={plan_update}  missing={plan_missing}")
+
     if missing_filenames:
         print(
-            f"\n{plan_missing} per-book file(s) are not yet in the "
-            f"'{args.folder}' folder. Create them manually as Google Sheets "
-            "with these EXACT names (no extension):"
+            f"\n{plan_missing} of the {VOLUME_COUNT + 1} fixed file(s) are not yet "
+            f"in the '{args.folder}' folder. Create them ONCE, manually, as Google "
+            "Sheets with these EXACT names (no extension):"
         )
         for f in missing_filenames:
             print(f"  - {f}")
         print(
-            f"\nThen re-run the script. Existing rows will be overwritten on update."
+            "\nThen re-run the script. Once all "
+            f"{VOLUME_COUNT + 1} files exist, new books never need new files."
         )
     if not args.apply:
         print("\n(dry-run) re-run with --apply to write content to existing files.")
