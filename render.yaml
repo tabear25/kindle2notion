@@ -1,0 +1,61 @@
+# Render Blueprint for kindle2notion (Docker web service).
+#
+# Deploy:
+#   1. Commit Dockerfile / .dockerignore / render.yaml and push to GitHub.
+#   2. In the Render dashboard: New + -> Blueprint -> pick this repository.
+#   3. Render reads this file and prompts you to fill in every env var
+#      marked "sync: false" (secrets are never stored in Git).
+#
+# Full step-by-step guide: deploy/render/README.md
+services:
+  - type: web
+    name: kindle2notion
+    runtime: docker
+    region: singapore           # closest Render region to Japan
+    plan: free                  # free instances sleep after 15 min idle
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # --- Required ---------------------------------------------------
+      - key: AMAZON_EMAIL
+        sync: false
+      - key: AMAZON_PASSWORD
+        sync: false
+      - key: NOTION_API_KEY
+        sync: false
+      - key: NOTION_DATABASE_ID
+        sync: false
+      # --- Web UI login (set these: the service is on the public internet)
+      - key: WEB_USERNAME
+        sync: false
+      - key: WEB_PASSWORD
+        sync: false
+      # --- Optional: Google Sheets export (leave blank to disable) ----
+      - key: GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE
+        sync: false
+      - key: GOOGLE_SHEETS_SPREADSHEET_ID
+        sync: false
+      # --- Runtime ----------------------------------------------------
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+    # ----------------------------------------------------------------
+    # Persistent disk — PAID plans only. Attaching a disk makes the
+    # service ineligible for the free plan. Without a disk the Amazon
+    # session (storage_state.json) and the local highlights/ Markdown
+    # are wiped whenever the container restarts, so 2FA login is needed
+    # again after each cold start.
+    #
+    # To enable: set "plan" above to "starter", uncomment the disk block
+    # below, and add these env vars under "envVars" so data is written
+    # onto /var/data:
+    #   - key: STORAGE_STATE_PATH
+    #     value: /var/data/storage_state.json
+    #   - key: LOCAL_EXPORT_DIR
+    #     value: /var/data/highlights
+    #
+    # disk:
+    #   name: kindle2notion-data
+    #   mountPath: /var/data
+    #   sizeGB: 1

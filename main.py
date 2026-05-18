@@ -13,8 +13,20 @@ from notion import toNotion
 
 nest_asyncio.apply()
 
-STORAGE_STATE_PATH = BASE_DIR / "storage_state.json"
-LOCAL_EXPORT_DIR = BASE_DIR / toLocal.DEFAULT_OUTPUT_DIRNAME
+# Load config/KEYS.env before resolving the paths below, so they can be
+# overridden from the environment (e.g. a Render persistent-disk mount).
+# Real environment variables always win over the file (override=False) —
+# this is what lets env vars set in Render's dashboard take effect.
+load_env_file()
+
+# Filesystem locations. Overridable via env vars so the app can write onto
+# a mounted disk when deployed; the defaults preserve the original behaviour.
+STORAGE_STATE_PATH = Path(os.getenv("STORAGE_STATE_PATH") or BASE_DIR / "storage_state.json")
+LOCAL_EXPORT_DIR = Path(os.getenv("LOCAL_EXPORT_DIR") or BASE_DIR / toLocal.DEFAULT_OUTPUT_DIRNAME)
+
+# Chromium flags needed to run headless inside a container: the container
+# user has no usable sandbox, and the default /dev/shm is too small.
+BROWSER_LAUNCH_ARGS = ["--no-sandbox", "--disable-dev-shm-usage"]
 
 _config_loaded = False
 AMAZON_EMAIL = None
@@ -82,7 +94,7 @@ def prompt_book_limit():
 def run(playwright, max_books=None, progress_callback=None,
         two_factor_callback=None, headless_login=False):
     load_config()
-    browser = playwright.chromium.launch(headless=headless_login)
+    browser = playwright.chromium.launch(headless=headless_login, args=BROWSER_LAUNCH_ARGS)
     context = browser.new_context()
     page = context.new_page()
 
@@ -94,11 +106,12 @@ def run(playwright, max_books=None, progress_callback=None,
             two_factor_callback=two_factor_callback,
             allow_manual_auth=not headless_login,
         )
+        STORAGE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         context.storage_state(path=str(STORAGE_STATE_PATH))
     finally:
         browser.close()
 
-    headless_browser = playwright.chromium.launch(headless=True)
+    headless_browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
     headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
     headless_page = headless_context.new_page()
 

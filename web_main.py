@@ -64,6 +64,7 @@ app = create_app()
 
 if __name__ == "__main__":
     host = os.getenv("WEB_HOST", DEFAULT_HOST)
-    port = int(os.getenv("WEB_PORT", str(DEFAULT_PORT)))
+    # Render and most PaaS inject PORT; fall back to the project's WEB_PORT.
+    port = int(os.getenv("PORT") or os.getenv("WEB_PORT") or DEFAULT_PORT)
     _print_access_urls(host, port)
     app.run(host=host, port=port, threaded=True)

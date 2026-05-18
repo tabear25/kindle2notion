@@ -1,0 +1,23 @@
+# Version control
+.git/
+.gitignore
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Secrets, credentials, generated session state — never bake into the image
+**/*.env
+storage_state.json
+service_account*.json
+CODEX_KEY_CONTEXT.md
+
+# Local data and tooling not needed at runtime
+highlights/
+test/
+.claude/
+
+# Other deployment targets and documentation
+deploy/
+**/*.md

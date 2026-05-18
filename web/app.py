@@ -43,6 +43,8 @@ def create_app():
 
     @app.before_request
     def _check_auth():
+        if request.path == "/healthz":
+            return None
         if not auth_enabled:
             return None
         auth = request.authorization
@@ -61,6 +63,11 @@ def create_app():
     @app.route("/")
     def index():
         return render_template("index.html")
+
+    @app.route("/healthz")
+    def healthz():
+        """Unauthenticated health check used by Render and uptime probes."""
+        return jsonify({"status": "ok"})
 
     @app.route("/api/start", methods=["POST"])
     def api_start():
