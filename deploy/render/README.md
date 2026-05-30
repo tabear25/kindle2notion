@@ -66,7 +66,6 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` | 任意 | サービスアカウント JSON（**文字列そのものを貼り付け**） |
 | `GOOGLE_SHEETS_SPREADSHEET_ID` | 任意 | エクスポート先スプレッドシート ID |
 | `STORAGE_STATE_PATH` | 任意 | セッション保存先（永続ディスク利用時のみ設定） |
-| `LOCAL_EXPORT_DIR` | 任意 | ハイライト Markdown の出力先（永続ディスク利用時のみ） |
 
 > **⚠️ `WEB_USERNAME` / `WEB_PASSWORD` は必ず設定してください。**
 > 設定しないと URL を知っている誰でもあなたの Amazon アカウントでスクレイピングを
@@ -97,10 +96,9 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 2. `render.yaml` 末尾の `disk:` ブロックのコメントアウトを外す。
 3. 環境変数を追加:
    - `STORAGE_STATE_PATH` = `/var/data/storage_state.json`
-   - `LOCAL_EXPORT_DIR` = `/var/data/highlights`
 4. commit & push → Render が再デプロイ。
 
-これで Amazon セッションとハイライト Markdown がディスク `/var/data` に保存され、
+これで Amazon セッションがディスク `/var/data` に保存され、
 再起動・再デプロイをまたいで保持されます。
 
 ## 動作確認

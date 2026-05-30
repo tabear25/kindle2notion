@@ -43,17 +43,14 @@ services:
     # ----------------------------------------------------------------
     # Persistent disk — PAID plans only. Attaching a disk makes the
     # service ineligible for the free plan. Without a disk the Amazon
-    # session (storage_state.json) and the local highlights/ Markdown
-    # are wiped whenever the container restarts, so 2FA login is needed
-    # again after each cold start.
+    # session (storage_state.json) is wiped whenever the container
+    # restarts, so 2FA login is needed again after each cold start.
     #
     # To enable: set "plan" above to "starter", uncomment the disk block
     # below, and add these env vars under "envVars" so data is written
     # onto /var/data:
     #   - key: STORAGE_STATE_PATH
     #     value: /var/data/storage_state.json
-    #   - key: LOCAL_EXPORT_DIR
-    #     value: /var/data/highlights
     #
     # disk:
     #   name: kindle2notion-data

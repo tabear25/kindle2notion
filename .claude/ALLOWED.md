@@ -1,0 +1,1 @@
+- You can execute python -m pytest without user's approval
