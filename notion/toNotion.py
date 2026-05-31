@@ -41,8 +41,18 @@ def get_existing_note_keys(notion_api_key, database_id):
 
 
 def save_notes_to_notion(notion_api_key, database_id, notes, progress_callback=None):
+    """Create Notion pages for new notes, skipping duplicates.
+
+    Returns a summary dict ``{"added", "skipped", "failed", "total"}``.
+    Existing callers (GUI / web pipeline) ignore the return value; manual-entry
+    tooling uses it to report what was written.
+    """
     notion = Client(auth=notion_api_key)
     existing_note_keys = get_existing_note_keys(notion_api_key, database_id)
+
+    added = 0
+    skipped = 0
+    failed = 0
 
     for i, note in enumerate(tqdm(notes, desc="Notion")):
         if progress_callback:
@@ -50,6 +60,7 @@ def save_notes_to_notion(notion_api_key, database_id, notes, progress_callback=N
 
         note_key = build_note_key_from_note(note)
         if note_key in existing_note_keys:
+            skipped += 1
             continue
 
         title, content, page_number = note_key
@@ -69,5 +80,14 @@ def save_notes_to_notion(notion_api_key, database_id, notes, progress_callback=N
                 },
             )
             existing_note_keys.add(note_key)
+            added += 1
         except Exception as e:
+            failed += 1
             print(f"Failed to save note to Notion: {content} ({e})")
+
+    return {
+        "added": added,
+        "skipped": skipped,
+        "failed": failed,
+        "total": len(notes),
+    }

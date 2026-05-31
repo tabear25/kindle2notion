@@ -24,6 +24,7 @@ from gspread.exceptions import WorksheetNotFound
 from tqdm import tqdm
 
 from note_utils import (
+    BOOK_META_KEYS,
     BOOKS_HEADERS,
     HIGHLIGHTS_HEADERS,
     content_dedup_key,
@@ -103,6 +104,40 @@ def _load_books(worksheet) -> dict:
     return out
 
 
+def list_existing_books(service_account_file, spreadsheet_id) -> list[dict]:
+    """Return existing books from ``01_books`` as lightweight dicts.
+
+    Read-only: opens the spreadsheet and reads ``01_books`` without creating or
+    modifying anything. Each entry is ``{"book_id", "title", "author",
+    "highlight_count"}``. Used by the manual-entry tooling so an assistant can
+    fuzzy-match a user-typed title against titles already on record and catch
+    typos before they create a duplicate book (book_id is title-derived).
+    Returns ``[]`` if the sheet is missing or empty.
+    """
+    client = _build_client(service_account_file)
+    spreadsheet = client.open_by_key(spreadsheet_id)
+    try:
+        worksheet = spreadsheet.worksheet(BOOKS_SHEET)
+    except WorksheetNotFound:
+        return []
+    books = _load_books(worksheet)
+    out = []
+    for bid, row in books.items():
+        title = (row.get("title") or "").strip()
+        if not title:
+            continue
+        out.append(
+            {
+                "book_id": bid,
+                "title": title,
+                "author": (row.get("author") or "").strip(),
+                "highlight_count": (row.get("highlight_count") or "").strip(),
+            }
+        )
+    out.sort(key=lambda b: b["title"])
+    return out
+
+
 def _load_highlight_state(worksheet):
     """Return (dedup_set, max_idx_per_book) from ``02_highlights``."""
     rows = worksheet.get_all_values()
@@ -135,13 +170,31 @@ def _load_highlight_state(worksheet):
     return dedup, max_idx
 
 
+def _book_extra_from_note(note: dict) -> dict:
+    """Pull human-supplied book metadata off a note dict.
+
+    Kindle-scraped notes carry none of these keys, so this returns ``{}`` and
+    ``note_to_book_row`` behaves exactly as before. Manually added books (see
+    ``scripts/add_manual_highlights.py``) may carry ``author`` / ``genre`` /
+    ``reading_status`` etc., which then populate the new book's row on
+    ``01_books``.
+    """
+    return {key: note[key] for key in BOOK_META_KEYS if note.get(key)}
+
+
 def save_notes_to_google_sheets(
     service_account_file,
     spreadsheet_id,
     notes: Iterable,
     progress_callback=None,
 ):
-    """Append new books / highlights to the v2 schema worksheets."""
+    """Append new books / highlights to the v2 schema worksheets.
+
+    Returns a summary dict ``{"new_books", "new_highlights",
+    "skipped_duplicates", "skipped_invalid", "total_notes"}``. Existing callers
+    (GUI / web pipeline) ignore the return value; manual-entry tooling uses it
+    to report what was written.
+    """
     notes = list(notes)
     client = _build_client(service_account_file)
     spreadsheet = client.open_by_key(spreadsheet_id)
@@ -160,6 +213,8 @@ def save_notes_to_google_sheets(
     new_book_rows = []
     new_highlight_rows = []
     touched_books = {}
+    skipped_invalid = 0
+    skipped_duplicates = 0
 
     total = len(notes)
     for i, note in enumerate(tqdm(notes, desc="Sheets")):
@@ -169,17 +224,21 @@ def save_notes_to_google_sheets(
         title = (note.get("title") or "").strip()
         content = (note.get("content") or "").strip()
         if not title or not content:
+            skipped_invalid += 1
             continue
 
         bid = note.get("book_id") or stable_book_id(title)
 
         if bid not in existing_books:
-            new_book_rows.append(note_to_book_row(bid, title, today))
+            new_book_rows.append(
+                note_to_book_row(bid, title, today, extra=_book_extra_from_note(note))
+            )
             existing_books[bid] = {"first_synced_at": today, "highlight_count": "0"}
         touched_books.setdefault(bid, 0)
 
         key = content_dedup_key(bid, content)
         if key in existing_dedup:
+            skipped_duplicates += 1
             continue
 
         max_idx[bid] = max_idx.get(bid, 0) + 1
@@ -211,6 +270,14 @@ def save_notes_to_google_sheets(
             _refresh_book_meta(books_ws, touched_books, today)
         except Exception as e:
             print(f"Failed to refresh book metadata on {BOOKS_SHEET}: {e}")
+
+    return {
+        "new_books": len(new_book_rows),
+        "new_highlights": len(new_highlight_rows),
+        "skipped_duplicates": skipped_duplicates,
+        "skipped_invalid": skipped_invalid,
+        "total_notes": len(notes),
+    }
 
 
 def _refresh_book_meta(books_ws, touched_books: dict, today: str) -> None:

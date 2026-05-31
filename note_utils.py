@@ -48,11 +48,20 @@ def build_note_key(title, content, page) -> tuple[str, str, str]:
 
 
 def build_note_key_from_note(note: dict) -> tuple[str, str, str]:
-    """Legacy variant that pulls fields from a note dict."""
+    """Legacy variant that pulls fields from a note dict.
+
+    The position falls back to ``location`` when ``page`` is empty. This value
+    is both the Notion dedup key and what gets written to Notion's ``Page``
+    property, so the two stay consistent across runs. Kindle-scraped notes carry
+    only ``page`` (no ``location``), so their key is unchanged; manually added
+    non-Kindle highlights -- which may supply a Kindle-style ``location`` instead
+    of a page -- then keep that position in Notion too, instead of a blank
+    ``Page``.
+    """
     return build_note_key(
         note.get("title", ""),
         note.get("content", ""),
-        note.get("page", ""),
+        note.get("page") or note.get("location", ""),
     )
 
 
@@ -145,9 +154,35 @@ HIGHLIGHTS_HEADERS: list[str] = [
 
 SOURCE_LABEL = "kindle2notion"
 
+# Book metadata columns that a caller may pre-fill via the ``extra`` argument
+# of ``note_to_book_row`` (e.g. when adding a physical / non-Kindle book by
+# hand). The remaining columns (book_id, title, dates, highlight_count) are
+# always managed by this module and never taken from ``extra``.
+BOOK_META_KEYS: tuple[str, ...] = (
+    "author",
+    "genre",
+    "reading_status",
+    "finished_at",
+    "rating",
+    "amazon_asin",
+    "cover_url",
+    "notion_url",
+)
 
-def note_to_book_row(book_id: str, title: str, today: str | None = None) -> list[str]:
-    """Initial row for a brand-new book on ``01_books``."""
+
+def note_to_book_row(
+    book_id: str,
+    title: str,
+    today: str | None = None,
+    extra: dict | None = None,
+) -> list[str]:
+    """Initial row for a brand-new book on ``01_books``.
+
+    ``extra`` lets a caller pre-fill the human-supplied metadata columns
+    (see :data:`BOOK_META_KEYS`) when the book is added manually rather than
+    scraped from Kindle. Only non-empty values override the defaults; unknown
+    keys are ignored. Kindle scraping passes no ``extra`` and is unchanged.
+    """
     today = today or today_iso()
     title = normalize_text(title)
     row = {
@@ -166,6 +201,11 @@ def note_to_book_row(book_id: str, title: str, today: str | None = None) -> list
         "first_synced_at": today,
         "last_synced_at": today,
     }
+    if extra:
+        for key in BOOK_META_KEYS:
+            value = normalize_text(extra.get(key, ""))
+            if value:
+                row[key] = value
     return [row[h] for h in BOOKS_HEADERS]
 
 
@@ -181,6 +221,6 @@ def note_to_highlight_row(hid: str, book_id: str, note: dict, today: str | None 
         "page": normalize_text(note.get("page", "")) if note.get("location") else "",
         "highlighted_at": normalize_text(note.get("highlighted_at", "")),
         "synced_at": today,
-        "source": SOURCE_LABEL,
+        "source": normalize_text(note.get("source")) or SOURCE_LABEL,
     }
     return [row[h] for h in HIGHLIGHTS_HEADERS]
