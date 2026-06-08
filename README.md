@@ -16,6 +16,7 @@ Kindle Notebook のハイライトを取得し、Notion データベースへ保
 - Notion データベースへ保存（重複スキップ付き）
 - Google スプレッドシートへ保存（`01_books` / `02_highlights` の v2 スキーマ）
 - 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`）
+- Web UI フォーム・HTTP API・Cloud CLI からスマホや外出先で手動ハイライト追加
 - NotebookLM 用に 49 ボリューム＋索引の固定 50 ファイルへ分割（`split_per_book.py`）
 
 ## 前提条件
@@ -79,6 +80,10 @@ GOOGLE_SHEETS_SPREADSHEET_ID=
 # Web UI に Basic 認証を付けたい場合のみ設定
 WEB_USERNAME=
 WEB_PASSWORD=
+
+# Web サーバーのバインドアドレスとポート（省略時: 0.0.0.0 / 5000）
+WEB_HOST=127.0.0.1
+WEB_PORT=5000
 ```
 
 `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` は次のどちらでも使えます。
@@ -137,11 +142,16 @@ http://<server-ip>:5000
 ### 手動ハイライト追加 (`add_manual_highlights.py`)
 
 Kindle 以外の本（紙の本・他ストアの電子書籍）のハイライトを Notion / Google Sheets に追加します。  
+スマホや外出先からも **Web フォーム・HTTP API・Cloud CLI** の 3 経路で使えます。  
 詳細: [`DOCUMENTS/MANUAL_HIGHLIGHTS.md`](DOCUMENTS/MANUAL_HIGHLIGHTS.md)
 
 ```bash
 # ドライラン（確認のみ）
 py -3 -m scripts.add_manual_highlights --title "本のタイトル" --highlight "ハイライト1" --highlight "ハイライト2"
+
+# JSON ファイルや標準入力からも渡せる
+py -3 -m scripts.add_manual_highlights --input book.json
+cat book.json | py -3 -m scripts.add_manual_highlights --stdin
 
 # 書き込み確定
 py -3 -m scripts.add_manual_highlights --title "..." --highlight "..." --apply
@@ -161,6 +171,9 @@ py -3 -m scripts.split_per_book --parent-folder FOLDER_ID
 
 # 本番書き込み
 py -3 -m scripts.split_per_book --apply --parent-folder FOLDER_ID
+
+# サブフォルダ名・ファイル名プレフィックスを変更する場合（デフォルト: notebooklm / k2n）
+py -3 -m scripts.split_per_book --apply --parent-folder FOLDER_ID --folder notebooklm --prefix k2n
 ```
 
 ### v1 → v2 スキーマ移行 (`migrate_legacy_sheet.py`)
