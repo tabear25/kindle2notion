@@ -20,6 +20,36 @@
           <input id="max-books" type="number" min="1" placeholder="空欄ですべて取得" inputmode="numeric">
           <p class="helper">空欄のまま開始すると、表示されているすべての書籍を対象に処理します。</p>
           <button id="btn-start" class="btn-primary">同期を開始</button>
+          <button id="btn-go-manual" class="btn-secondary">紙の本のハイライトを手動で追加</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="screen-manual" class="screen">
+      <div class="card">
+        <div class="card-header">
+          <span class="badge">MANUAL ENTRY</span>
+          <h1>手動でハイライトを追加</h1>
+          <p class="subtitle">Kindle にない本（紙の本・他ストアの電子書籍など）のハイライトを、同じ Notion / Google Sheets に登録します。</p>
+        </div>
+        <div class="card-body">
+          <label for="manual-title">本のタイトル</label>
+          <input id="manual-title" type="text" placeholder="例: ファスト&スロー" autocomplete="off">
+          <button id="btn-manual-search" class="btn-secondary">既存の本を検索（この本ですか？）</button>
+          <div id="manual-matches" class="match-list"></div>
+
+          <label for="manual-highlights" class="mt-16">ハイライト（1行に1つ）</label>
+          <textarea id="manual-highlights" rows="6" placeholder="1行に1ハイライトを入力してください"></textarea>
+
+          <label class="checkbox-row">
+            <input id="manual-physical" type="checkbox">
+            <span>紙の本として記録する（source = physical）</span>
+          </label>
+
+          <button id="btn-manual-preview" class="btn-primary">内容を確認</button>
+          <div id="manual-result" class="result-box"></div>
+          <button id="btn-manual-apply" class="btn-primary hidden">この内容で追加する</button>
+          <button id="btn-manual-back" class="btn-secondary">開始画面へ戻る</button>
         </div>
       </div>
     </div>
