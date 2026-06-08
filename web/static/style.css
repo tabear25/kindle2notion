@@ -166,6 +166,89 @@ input:focus {
   background: var(--accent-hover);
 }
 
+.btn-secondary {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  margin-top: 12px;
+  font-size: .95rem;
+  font-weight: 700;
+  color: var(--accent-hover);
+  background: var(--secondary-bg);
+  border: 1px solid var(--card-edge);
+  border-radius: 8px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  min-height: 44px;
+}
+
+.btn-secondary:active { background: var(--accent-soft); }
+.btn-secondary:disabled { opacity: .6; cursor: default; }
+
+/* ---- Manual entry ---- */
+.hidden { display: none !important; }
+.mt-16 { margin-top: 16px; }
+
+textarea {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 1rem;
+  font-family: inherit;
+  border: 1px solid var(--neutral-border);
+  border-radius: 8px;
+  background: var(--surface-bg);
+  color: var(--text-primary);
+  outline: none;
+  resize: vertical;
+  transition: border-color .15s;
+  -webkit-appearance: none;
+}
+
+textarea:focus { border-color: var(--accent); }
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+.checkbox-row input { width: auto; }
+
+.match-list { margin-top: 10px; }
+
+.match-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  font-size: .9rem;
+  background: var(--surface-bg);
+  border: 1px solid var(--card-edge);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.match-item:active { background: var(--accent-soft); }
+.match-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.match-item .match-score { color: var(--text-subtle); font-size: .78rem; white-space: nowrap; }
+.match-note { font-size: .82rem; color: var(--text-subtle); margin-top: 6px; }
+
+.result-box {
+  margin-top: 14px;
+  font-size: .85rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.result-box.ok { color: var(--success); }
+.result-box.error { color: var(--danger); }
+
 /* ---- Progress phases ---- */
 .phase { margin-bottom: 16px; }
 

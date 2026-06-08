@@ -14,12 +14,36 @@ description: >-
 
 The user reads books that are not on Amazon Kindle (paper books, PDFs, library
 loans, other e-book stores). Their highlights cannot be scraped, so collect them
-in conversation and write them with `scripts/add_manual_highlights.py`, which
-reuses the exact same Notion + Google Sheets writers as the Kindle sync. The
-output is indistinguishable from scraped highlights except for the `source`
-column on `02_highlights`.
+in conversation and write them into the **same** Notion database + Google Sheets
+the Kindle sync uses. The output is indistinguishable from scraped highlights
+except for the `source` column on `02_highlights`.
 
 Always converse with the user in **Japanese** (this is a Japanese user).
+
+## Three execution modes — pick one up front
+
+The same logic is reachable three ways. The data-gathering (Step 1), the typo
+guard (Step 2), and dry-run-then-confirm-then-apply are **identical** in all of
+them; only *how you invoke it* differs. Pick by where you are running:
+
+- **Local CLI** — on the user's PC with this repo and the `py` launcher. Run
+  `py -m scripts.add_manual_highlights ...` (Steps 1–6 below). Use whenever you
+  can. Check with `py -m scripts.add_manual_highlights --help`.
+- **Cloud Claude Code (run the CLI in the cloud)** — you are in a
+  claude.ai/code cloud session connected to **this GitHub repo**, with the
+  required env vars set in the cloud environment and `deploy/cloud_setup.sh`
+  having installed the deps. This is the lightest "from a phone" path: the
+  **same CLI**, just `python` instead of `py`, and no deployed server needed.
+  See **"Cloud mode"** below. Check with `python -m scripts.add_manual_highlights --help`.
+- **Deployed HTTP API (curl from anywhere)** — you cannot run the script at all
+  (no repo / no env), but the user runs this tool as a deployed web service
+  (`deploy/README.md`) that holds the same credentials. Drive it over HTTP with
+  `curl`. See **"HTTP API mode"** below.
+
+If both a cloud session *and* a deployed service are available, prefer the
+**cloud CLI** (no dependency on the server being awake). Use the **HTTP API**
+when you can't run the script (e.g. a non-Claude-Code surface, or no GitHub
+connection) but the service is up.
 
 ## Step 1 — Gather the book and highlights
 
@@ -175,3 +199,124 @@ git-ignored but leaving it around is untidy). Confirm to the user what was added
 - Notion stores only Title / Content / Page (no author/source). The richer
   metadata lives on Google Sheets `01_books`.
 - This never runs the Kindle scraper and never touches `storage_state.json`.
+
+## Cloud mode — run the CLI inside a cloud Claude Code session
+
+Use this when you are in a **claude.ai/code cloud session** connected to this
+repo (typical "from my phone" case). It is just **Local mode with `python`**, so
+Steps 1–6 above apply verbatim — only the launcher changes (`py` → `python`).
+
+One-time setup the user does in the cloud environment (relay these if they
+haven't; you cannot set them yourself):
+- **Env vars**: `NOTION_API_KEY`, `NOTION_DATABASE_ID`,
+  `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` (the service-account JSON *as a string*),
+  `GOOGLE_SHEETS_SPREADSHEET_ID`, and `AMAZON_EMAIL` / `AMAZON_PASSWORD`
+  (`main.load_config()` still requires these even though the manual path is
+  unused). ⚠️ The cloud env has no dedicated secret store yet — these are
+  readable by anyone who can edit the environment; flag that to the user.
+- **Network**: set access to **Full**, or a custom allowlist including
+  `api.notion.com` (Google Sheets' `*.googleapis.com` is allowed by default).
+- **Deps**: run `deploy/cloud_setup.sh` (or set it as the environment's setup
+  script) — it `pip install`s the requirements. No Playwright browser download
+  is needed (the manual path never launches a browser).
+
+Then run exactly as in Local mode, e.g.:
+
+```bash
+# Step 2 — reconcile the title (read-only "この本ですか？")
+python -m scripts.add_manual_highlights --list-books --matches-only --title "<タイトル>"
+# Step 4 — dry-run
+python -m scripts.add_manual_highlights --input manual_highlights_input.json
+# Step 5 — apply
+python -m scripts.add_manual_highlights --input manual_highlights_input.json --apply
+```
+
+If `import` errors mention a missing package, the setup script has not run —
+run `bash deploy/cloud_setup.sh` first. If a Notion write hangs/refuses with a
+network error, `api.notion.com` is not allowlisted (see Network above).
+
+## HTTP API mode — drive the deployed web service over HTTP
+
+Use this when you **cannot run the script** (no repo / no env on this surface)
+but the deployed Flask service (`deploy/README.md`) is up. It exposes the same
+flow as two endpoints, protected by Basic auth.
+
+**Connection details (ask the user once, then reuse in the session):**
+- Base URL — the deployed address, e.g. `https://<name>.duckdns.org` (VPS) or
+  the Render URL. Do **not** guess it; ask if you don't have it.
+- Basic auth — `WEB_USERNAME` / `WEB_PASSWORD` (the same login the web UI uses).
+  Pass with `curl -u "$USER:$PASS"`. Treat the password as a secret: don't echo
+  it back or write it to a committed file.
+
+The conversation (Step 1 gather, Step 2 reconcile, confirm before writing, Step 5
+report honestly) is **unchanged** — only the commands differ.
+
+### Step 2 (remote) — reconcile the title (read-only "この本ですか？")
+
+```bash
+curl -s -u "$USER:$PASS" \
+  --get "https://<base>/api/manual/books" \
+  --data-urlencode "title=ユーザーが言ったタイトル"
+```
+
+Returns the same shape as `--list-books --matches-only`:
+
+```json
+{"count": 123, "sheets_configured": true, "query_title": "ファストアンドスロー",
+ "matches_for_title": [
+   {"title": "ファスト&スロー", "score": 0.83, "book_id": "BK-AB12CD", "is_exact_normalized": false}]}
+```
+
+Act on it exactly as in Step 2: `is_exact_normalized: true` → reuse that title
+silently; a close match → ask 「もしかして既存の『…』ですか？」; no match → new
+book. `"sheets_configured": false` means Sheets is off — skip the reconcile and
+confirm the spelling with the user directly. Add `&full=1` to also get the whole
+`books` list, or `&cutoff=0.5` to widen the net.
+
+### Step 4 (remote) — dry-run, then confirm
+
+The POST body is the **same JSON payload** as the CLI plus an `apply` flag
+(default `false` = dry-run). Single book or a `books` array both work.
+
+```bash
+curl -s -u "$USER:$PASS" -H "Content-Type: application/json" \
+  -X POST "https://<base>/api/manual/highlights" \
+  -d '{"title":"ファスト&スロー","source":"physical",
+       "highlights":[{"content":"システム1は速い。","page":"42"}]}'
+```
+
+The response echoes the plan; show it to the user in Japanese (何冊・何ハイライト
+を、どこへ) and ask for confirmation:
+
+```json
+{"applied": false, "ok": true, "books": 1, "highlights": 1,
+ "targets": ["Notion","Google Sheets"],
+ "plan": [{"title":"ファスト&スロー","highlights":1,"source":"physical"}],
+ "notion": null, "sheets": null, "problems": []}
+```
+
+### Step 5 (remote) — apply, then report honestly
+
+Re-POST the same body with `"apply": true`:
+
+```bash
+curl -s -u "$USER:$PASS" -H "Content-Type: application/json" \
+  -X POST "https://<base>/api/manual/highlights" \
+  -d '{"title":"ファスト&スロー","apply":true,
+       "highlights":[{"content":"システム1は速い。","page":"42"}]}'
+```
+
+```json
+{"applied": true, "ok": true,
+ "notion": {"added":1,"skipped":0,"failed":0,"total":1},
+ "sheets": {"new_books":1,"new_highlights":1,"skipped_duplicates":0,"skipped_invalid":0,"total_notes":1},
+ "problems": []}
+```
+
+**Always check `ok`, not just the HTTP status** — a partial write failure still
+returns HTTP 200 with `"ok": false` and a populated `problems` array. In that
+case tell the user **in Japanese** exactly what did not get written and offer to
+retry; do not report 「追加しました」. `"sheets": {"not_configured": true}` means
+only Notion was written (relay that). Optional body flags: `"notion_only": true`
+/ `"sheets_only": true` to target one destination. There is no temp file to clean
+up in remote mode.

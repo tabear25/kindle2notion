@@ -130,8 +130,69 @@ py -3 -m scripts.add_manual_highlights --input book.json --apply
 
 ---
 
+## スマホから追加する（3つの経路）
+
+外出先で PC のコマンドが使えないときは、以下のいずれかで同じことができます。
+どれも同じ Notion / Google Sheets に書き込まれ、重複は自動でスキップされます。
+
+### 方法 1: クラウドの Claude Code から（環境変数 + 既存 CLI を直接実行）
+
+サーバー常駐が不要で最も軽量。claude.ai/code のクラウド環境にこのリポジトリを
+接続し、シークレットを環境変数として保存すると、スマホの Claude Code が PC と
+同じ CLI（`python -m scripts.add_manual_highlights ...`）をそのまま実行できます。
+
+1. claude.ai/code でこの GitHub リポジトリを接続する。
+2. 環境変数（Environment variables）に設定:
+   `NOTION_API_KEY` / `NOTION_DATABASE_ID` /
+   `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE`（サービスアカウント JSON を文字列で）/
+   `GOOGLE_SHEETS_SPREADSHEET_ID` / `AMAZON_EMAIL` / `AMAZON_PASSWORD`
+   （Amazon 認証情報は手動パスでは未使用だが `main.load_config()` が必須にしている）。
+3. ネットワークを **Full**、または `api.notion.com` を許可リストに追加
+   （Google Sheets の `*.googleapis.com` は既定で許可済み）。
+4. 依存を入れる: 環境の Setup script に `deploy/cloud_setup.sh` を指定（または
+   `bash deploy/cloud_setup.sh` を実行）。Playwright のブラウザ本体は不要。
+5. あとは Claude に「この本のハイライト追加して」と頼むだけ（スキル
+   `adding-manual-highlights` の *Cloud mode* に従って、あいまい検索で
+   「この本ですか？」と確認 → dry-run → apply）。
+
+> ⚠️ クラウド環境の環境変数は**専用のシークレット保管庫がまだ無く**、その環境を
+> 編集できる人には見えます。サービスアカウントの秘密鍵 JSON や Notion キーを
+> 置くことになるので、その前提で利用してください。
+
+### 方法 2: スマホのブラウザからフォームで入力（Claude 不要）
+
+デプロイ済み Web サービス（`deploy/README.md`、Basic 認証
+`WEB_USERNAME` / `WEB_PASSWORD`）を使います。
+
+1. デプロイ先の URL（例 `https://<名前>.duckdns.org`）を開く。
+2. 開始画面の **「紙の本のハイライトを手動で追加」** を押す。
+3. 本のタイトルを入れて **「既存の本を検索（この本ですか？）」** を押すと、
+   表記の近い既存の本が候補表示されます。同じ本ならタップして正式タイトルを採用。
+4. ハイライトを1行に1つ入力 → **「内容を確認」**（プレビュー）→ **「この内容で追加する」**。
+
+### 方法 3: HTTP API を curl（デプロイ済みサービス / 任意クライアント）
+
+Claude Code 以外の場所からでも、デプロイ済みサービスの API を直接叩けます。
+
+```bash
+# 類似タイトル検索（読み取り専用 / この本ですか？）
+curl -s -u "$USER:$PASS" --get "https://<base>/api/manual/books" \
+  --data-urlencode "title=ファストアンドスロー"
+
+# 追加（apply 省略時は dry-run。確認後に "apply": true で確定）
+curl -s -u "$USER:$PASS" -H "Content-Type: application/json" \
+  -X POST "https://<base>/api/manual/highlights" \
+  -d '{"title":"ファスト&スロー","apply":true,
+       "highlights":[{"content":"システム1は速い。","page":"42"}]}'
+```
+
+`POST /api/manual/highlights` は部分失敗でも HTTP 200 を返し、`"ok": false` と
+`problems` で知らせます。**ステータスコードだけでなく `ok` を必ず確認**してください。
+
+---
+
 ## 注意事項
 
 - **タイトルの表記を変えると `book_id` が変わり、別の本として登録されます。**  
-  追加前に必ず `--list-books --title "..."` で既存の表記を確認してください。
+  追加前に必ず `--list-books --title "..."`（または `GET /api/manual/books?title=...`）で既存の表記を確認してください。
 - 本メタデータ（著者・ジャンルなど）は初回作成時のみ有効です。既存の本行には上書きされません。

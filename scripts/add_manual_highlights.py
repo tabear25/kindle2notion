@@ -84,6 +84,15 @@ _HIGHLIGHT_PASSTHROUGH = ("page", "location", "highlighted_at")
 DEFAULT_MATCH_CUTOFF = 0.6
 
 
+class SheetsNotConfigured(RuntimeError):
+    """Raised by an operation that needs Google Sheets when it isn't configured.
+
+    The CLI turns this into a ``SystemExit`` (clean message, no traceback); the
+    web API turns it into a ``sheets_configured: false`` JSON response so a
+    phone / assistant caller can fall back gracefully.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers (no network / heavy deps) -- unit-tested in test/.
 # ---------------------------------------------------------------------------
@@ -244,6 +253,128 @@ def summarize_plan(notes: list[dict]) -> list[tuple[str, int, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Reusable operations (shared by the CLI and the web API)
+#
+# These carry the actual side effects -- reading Google Sheets, writing to
+# Notion / Sheets -- but return plain data instead of printing, so both the CLI
+# (``main_cli`` / ``_run_list_books``) and ``web/app.py`` can drive them without
+# duplicating logic. Heavy deps (``main``, ``notion``, ``gspread``) are still
+# imported lazily inside, so importing this module stays cheap.
+# ---------------------------------------------------------------------------
+
+
+def build_books_result(
+    title: str | None = None,
+    *,
+    match_cutoff: float = DEFAULT_MATCH_CUTOFF,
+    matches_only: bool = False,
+) -> dict:
+    """Return the existing-books result (the same dict ``--list-books`` prints).
+
+    Read-only: loads config and reads ``01_books`` via
+    :func:`toSheets.list_existing_books`, never writing. When ``title`` is given,
+    adds ``matches_for_title`` -- the existing titles most similar to it (see
+    :func:`find_similar_titles`) so a typo'd title surfaces the real book to
+    merge into. ``matches_only`` omits the (potentially large) full ``books``
+    list and is only meaningful together with ``title``.
+
+    Raises :class:`SheetsNotConfigured` when Google Sheets is not set up.
+    """
+    import main  # noqa: E402
+
+    main.load_config()
+    if not main.GOOGLE_SHEETS_ENABLED:
+        raise SheetsNotConfigured(
+            "Google Sheets is not configured. Set "
+            "GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE and GOOGLE_SHEETS_SPREADSHEET_ID "
+            "in config/KEYS.env."
+        )
+
+    from google_sheets import toSheets  # noqa: E402
+
+    books = toSheets.list_existing_books(
+        main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE, main.GOOGLE_SHEETS_SPREADSHEET_ID
+    )
+    result: dict = {"count": len(books)}
+
+    if title:
+        titles = [b["title"] for b in books]
+        ranked = find_similar_titles(title, titles, cutoff=match_cutoff)
+        by_title = {b["title"]: b for b in books}
+        # is_exact_normalized comes from REAL normalized equality, not the
+        # rounded score: a near-identical (non-equal) pair can round to 1.0, and
+        # the SKILL uses this flag to skip user confirmation.
+        norm_query = normalize_title_for_match(title)
+        result["query_title"] = title
+        result["matches_for_title"] = [
+            {
+                "title": match_title,
+                "score": score,
+                "book_id": by_title[match_title]["book_id"],
+                "is_exact_normalized": normalize_title_for_match(match_title) == norm_query,
+            }
+            for match_title, score in ranked
+        ]
+
+    # The full book list can be large; omit it when the caller only wants the
+    # ranked matches for a query title. Without --title there is nothing to
+    # rank, so the full list is always included.
+    if not (matches_only and title):
+        result["books"] = books
+
+    return result
+
+
+def write_notes(notes: list[dict], targets: list[str], *, apply: bool = True) -> dict:
+    """Write ``notes`` to the given ``targets`` ("Notion" / "Google Sheets").
+
+    Returns ``{"notion", "sheets", "problems"}`` where each destination value is
+    that writer's summary dict, ``{"not_configured": True}`` (Sheets targeted but
+    unset), or ``None`` (not targeted / dry-run). ``problems`` collects
+    human-readable strings for anything that did not get written cleanly, so the
+    caller can refuse to report a partial failure as success. A no-op returning
+    empty results when ``apply`` is False (callers do their own dry-run plan).
+    """
+    result: dict = {"notion": None, "sheets": None, "problems": []}
+    if not apply:
+        return result
+
+    import main  # noqa: E402
+
+    main.load_config()
+
+    if "Notion" in targets:
+        from notion import toNotion  # noqa: E402
+
+        summary = toNotion.save_notes_to_notion(
+            main.NOTION_API_KEY, main.NOTION_DATABASE_ID, notes
+        )
+        result["notion"] = summary
+        if summary["failed"]:
+            result["problems"].append(f"{summary['failed']} Notion write(s) failed")
+
+    if "Google Sheets" in targets:
+        if not main.GOOGLE_SHEETS_ENABLED:
+            result["sheets"] = {"not_configured": True}
+        else:
+            from google_sheets import toSheets  # noqa: E402
+
+            summary = toSheets.save_notes_to_google_sheets(
+                main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
+                main.GOOGLE_SHEETS_SPREADSHEET_ID,
+                notes,
+            )
+            result["sheets"] = summary
+            if summary["skipped_invalid"]:
+                result["problems"].append(
+                    f"{summary['skipped_invalid']} Sheets row(s) dropped "
+                    "(empty title/content)"
+                )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -396,50 +527,16 @@ def _run_list_books(args) -> int:
 
     If ``--title`` is also given, adds ``"matches_for_title"`` -- the existing
     titles most similar to it (difflib over NFKC-normalised forms), so a typo'd
-    title surfaces the real book to merge into. Heavy deps are imported lazily.
+    title surfaces the real book to merge into. The actual work lives in
+    :func:`build_books_result` (shared with the web API); here we just print it
+    and turn :class:`SheetsNotConfigured` into a clean ``SystemExit``.
     """
-    import main  # noqa: E402
-
-    main.load_config()
-    if not main.GOOGLE_SHEETS_ENABLED:
-        raise SystemExit(
-            "--list-books needs Google Sheets configured. Set "
-            "GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE and GOOGLE_SHEETS_SPREADSHEET_ID "
-            "in config/KEYS.env."
+    try:
+        result = build_books_result(
+            args.title, match_cutoff=args.match_cutoff, matches_only=args.matches_only
         )
-
-    from google_sheets import toSheets  # noqa: E402
-
-    books = toSheets.list_existing_books(
-        main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE, main.GOOGLE_SHEETS_SPREADSHEET_ID
-    )
-    result: dict = {"count": len(books)}
-
-    if args.title:
-        titles = [b["title"] for b in books]
-        ranked = find_similar_titles(args.title, titles, cutoff=args.match_cutoff)
-        by_title = {b["title"]: b for b in books}
-        # Derive is_exact_normalized from REAL normalized equality, not from the
-        # rounded score: a near-identical (non-equal) pair can have a difflib
-        # ratio that rounds to 1.0, and the SKILL uses this flag to skip user
-        # confirmation -- so it must mean "truly the same normalized title".
-        norm_query = normalize_title_for_match(args.title)
-        result["query_title"] = args.title
-        result["matches_for_title"] = [
-            {
-                "title": title,
-                "score": score,
-                "book_id": by_title[title]["book_id"],
-                "is_exact_normalized": normalize_title_for_match(title) == norm_query,
-            }
-            for title, score in ranked
-        ]
-
-    # The full book list can be large; omit it when the caller only wants the
-    # ranked matches for a query title (--matches-only). Without --title there
-    # is nothing to rank, so the full list is always included.
-    if not (args.matches_only and args.title):
-        result["books"] = books
+    except SheetsNotConfigured as exc:
+        raise SystemExit(str(exc))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -476,56 +573,33 @@ def main_cli(argv=None) -> int:
         )
         return 0
 
-    # Heavy imports are deferred so the pure helpers above stay importable
-    # (and unit-testable) without playwright / notion / gspread installed.
-    import main  # noqa: E402
+    # Heavy imports are deferred (inside write_notes) so the pure helpers above
+    # stay importable (and unit-testable) without playwright / notion / gspread.
+    result = write_notes(notes, targets, apply=True)
 
-    main.load_config()
-
-    # Track anything that did not get written cleanly so we can exit non-zero
-    # and the driving agent does not report a partial failure as success.
-    problems = []
-
-    if "Notion" in targets:
-        from notion import toNotion  # noqa: E402
-
-        summary = toNotion.save_notes_to_notion(
-            main.NOTION_API_KEY, main.NOTION_DATABASE_ID, notes
-        )
+    if result["notion"] is not None:
+        summary = result["notion"]
         print(
             f"[Notion] added {summary['added']}, "
             f"skipped {summary['skipped']} (already present), "
             f"failed {summary['failed']}"
         )
-        if summary["failed"]:
-            problems.append(f"{summary['failed']} Notion write(s) failed")
 
-    if "Google Sheets" in targets:
-        if not main.GOOGLE_SHEETS_ENABLED:
+    if result["sheets"] is not None:
+        summary = result["sheets"]
+        if summary.get("not_configured"):
             print("[Google Sheets] not configured (skipped). "
                   "Set GOOGLE_SHEETS_* in config/KEYS.env to enable.")
         else:
-            from google_sheets import toSheets  # noqa: E402
-
-            summary = toSheets.save_notes_to_google_sheets(
-                main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
-                main.GOOGLE_SHEETS_SPREADSHEET_ID,
-                notes,
-            )
             print(
                 f"[Google Sheets] new books {summary['new_books']}, "
                 f"new highlights {summary['new_highlights']}, "
                 f"skipped {summary['skipped_duplicates']} (already present), "
                 f"dropped {summary['skipped_invalid']} (empty title/content)"
             )
-            if summary["skipped_invalid"]:
-                problems.append(
-                    f"{summary['skipped_invalid']} Sheets row(s) dropped "
-                    "(empty title/content)"
-                )
 
-    if problems:
-        print("\n[partial failure] " + "; ".join(problems))
+    if result["problems"]:
+        print("\n[partial failure] " + "; ".join(result["problems"]))
         return 1
 
     return 0
