@@ -11,19 +11,9 @@ from config import BASE_DIR, load_env_file
 from notion import toNotion
 
 nest_asyncio.apply()
-
-# Load config/KEYS.env before resolving the paths below, so they can be
-# overridden from the environment (e.g. a Render persistent-disk mount).
-# Real environment variables always win over the file (override=False) —
-# this is what lets env vars set in Render's dashboard take effect.
 load_env_file()
 
-# Filesystem locations. Overridable via env vars so the app can write onto
-# a mounted disk when deployed; the defaults preserve the original behaviour.
 STORAGE_STATE_PATH = Path(os.getenv("STORAGE_STATE_PATH") or BASE_DIR / "storage_state.json")
-
-# Chromium flags needed to run headless inside a container: the container
-# user has no usable sandbox, and the default /dev/shm is too small.
 BROWSER_LAUNCH_ARGS = ["--no-sandbox", "--disable-dev-shm-usage"]
 
 _config_loaded = False
