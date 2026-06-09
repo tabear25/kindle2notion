@@ -21,6 +21,12 @@ Usage::
     python -m scripts.split_per_book --apply           # actually write
     python -m scripts.split_per_book --apply --folder notebooklm
 
+Writes are paced (and retried on a per-minute 429) so a full 50-file ``--apply``
+completes in one run. If the master's own Drive parent cannot be auto-resolved
+(e.g. it sits in 'My Drive' root or inside a trashed folder), set the
+``NOTEBOOKLM_PARENT_FOLDER_ID`` env var (or pass ``--parent-folder``) so the
+destination folder is found without it.
+
 Design notes:
 
 - Uses the same Service Account credential as the rest of the pipeline.
@@ -43,9 +49,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import statistics
 import sys
+import time
 from pathlib import Path
 
 # Make the project root importable when run as ``python scripts/...``.
@@ -55,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # helpers without needing gspread / google-auth / nest_asyncio installed.
 try:
     import gspread  # type: ignore
+    from gspread.exceptions import APIError  # type: ignore
     from google.auth.transport.requests import AuthorizedSession  # type: ignore
     from google.oauth2.service_account import Credentials  # type: ignore
     from google_sheets.toSheets import BOOKS_SHEET, HIGHLIGHTS_SHEET, SCOPES  # noqa: E402
@@ -69,6 +78,21 @@ DRIVE_API = "https://www.googleapis.com/drive/v3"
 VOLUME_COUNT = 49
 DEFAULT_SUBFOLDER_NAME = "notebooklm"
 DEFAULT_FILENAME_PREFIX = "k2n"
+
+# Google Sheets caps writes at ~60 requests/min/user. Each volume rewrite is
+# clear()+update() = 2 write requests, and a full run touches all 50 files
+# (~100 requests), so an unthrottled ``--apply`` reliably trips a 429 partway
+# through and leaves the later volumes stale. Pace each write to stay under the
+# limit, and retry once the per-minute window resets (see ``_write_volume``).
+WRITE_THROTTLE_SECONDS = 2.5
+QUOTA_RETRY_WAIT_SECONDS = 60
+MAX_QUOTA_RETRIES = 5
+
+# Env var naming the Drive folder that hosts the ``notebooklm`` subfolder. Set
+# this when the master spreadsheet's own parent cannot be auto-resolved (e.g.
+# the master lives in 'My Drive' root, or has been moved into a trashed folder),
+# so ``--apply`` no longer needs the ``--parent-folder`` flag each run.
+PARENT_FOLDER_ENV_VAR = "NOTEBOOKLM_PARENT_FOLDER_ID"
 
 # Columns on each volume sheet. ``book_id`` + ``book_title`` make every row
 # self-describing so NotebookLM keeps book context even when one file holds
@@ -373,12 +397,34 @@ def _load_master(gc, spreadsheet_id: str) -> tuple[list[dict], list[dict]]:
 
 
 def _write_volume(gc, file_id: str, header_and_rows: list[list[str]]) -> None:
-    """Replace sheet 1 of ``file_id`` with the supplied rows."""
+    """Replace sheet 1 of ``file_id`` with the supplied rows.
+
+    Paces each write and retries on a per-minute write-quota error (HTTP 429)
+    so a full 50-file ``--apply`` completes in one run instead of dying partway
+    through and leaving the later volumes stale.
+    """
     sh = gc.open_by_key(file_id)
     ws = sh.sheet1
-    ws.clear()
-    if header_and_rows:
-        ws.update("A1", header_and_rows, value_input_option="RAW")
+    for attempt in range(MAX_QUOTA_RETRIES + 1):
+        try:
+            ws.clear()
+            if header_and_rows:
+                ws.update("A1", header_and_rows, value_input_option="RAW")
+            break
+        except APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 and attempt < MAX_QUOTA_RETRIES:
+                print(
+                    f"  [quota] write-rate limit (429); waiting "
+                    f"{QUOTA_RETRY_WAIT_SECONDS}s then retrying "
+                    f"({attempt + 1}/{MAX_QUOTA_RETRIES})...",
+                    flush=True,
+                )
+                time.sleep(QUOTA_RETRY_WAIT_SECONDS)
+                continue
+            raise
+    if WRITE_THROTTLE_SECONDS:
+        time.sleep(WRITE_THROTTLE_SECONDS)
 
 
 def main_cli() -> int:
@@ -419,7 +465,9 @@ def main_cli() -> int:
             "Use this when the master spreadsheet lives in 'My Drive' root and "
             "the Drive API cannot determine its parent automatically. "
             "Find the ID in the folder's URL: "
-            "drive.google.com/drive/folders/<FOLDER_ID>"
+            "drive.google.com/drive/folders/<FOLDER_ID>. "
+            f"For a persistent setting, set the {PARENT_FOLDER_ENV_VAR} env var "
+            "instead (this flag overrides it)."
         ),
     )
     args = parser.parse_args()
@@ -444,10 +492,15 @@ def main_cli() -> int:
         f"prefix '{args.prefix}'"
     )
 
+    env_parent = os.environ.get(PARENT_FOLDER_ENV_VAR, "").strip()
     if args.parent_folder:
         parent_id = args.parent_folder
         _validate_parent_folder(drive, parent_id)
         print(f"[parent] folder id = {parent_id}  (from --parent-folder)")
+    elif env_parent:
+        parent_id = env_parent
+        _validate_parent_folder(drive, parent_id)
+        print(f"[parent] folder id = {parent_id}  (from ${PARENT_FOLDER_ENV_VAR})")
     else:
         parent_id = _get_parent_folder(drive, repo_main.GOOGLE_SHEETS_SPREADSHEET_ID)
         print(f"[parent] folder id = {parent_id}")

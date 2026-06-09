@@ -81,6 +81,12 @@ NOTION_DATABASE_ID=...
 GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=/path/to/service_account.json
 GOOGLE_SHEETS_SPREADSHEET_ID=...
  
+# Optional — destination folder for scripts/split_per_book.py (the NotebookLM
+# 50-file split). Set to the Drive folder ID that hosts the notebooklm/ subfolder
+# so `split_per_book --apply` needs no --parent-folder. Required when the master
+# spreadsheet's own parent can't be auto-resolved (My Drive root / trashed folder).
+NOTEBOOKLM_PARENT_FOLDER_ID=
+ 
 # Optional — Basic auth for the web UI (omit to disable auth)
 WEB_USERNAME=
 WEB_PASSWORD=
@@ -281,13 +287,15 @@ Contains two groups of helpers:
 - Index sheet columns: `book_id, title, volume, highlight_count, last_synced_at` (`volume` is the volume filename — a book→file lookup)
 - Filenames are fixed (no extension): index `<prefix>_index`, volumes `<prefix>_vol_01`..`<prefix>_vol_49`. Default prefix `k2n`.
 - Volumes + index are rewritten in full from the master every run (idempotent); books sorted by `book_id`, highlights by `highlight_id` for byte-stable output. Empty volumes are written header-only.
+- **Write throttling**: each volume rewrite is `clear()` + `update()` = 2 write requests, and a full run touches all 50 files (~100 requests), which exceeds the Sheets API's ~60-writes/min/user quota. `_write_volume()` paces each write (`WRITE_THROTTLE_SECONDS`) and retries on a 429 (`QUOTA_RETRY_WAIT_SECONDS` × `MAX_QUOTA_RETRIES`), so a single `--apply` completes all 50 files (~2 min) instead of dying around `k2n_vol_27` and leaving later volumes stale.
 - **Does not create new spreadsheet files.** Service accounts have 0 bytes of personal Drive storage, so creating files in "My Drive" fails with `storageQuotaExceeded`. The script writes only to spreadsheets that already exist in the target folder; missing files are reported as `[missing]`. Because the 50 filenames are fixed, the user creates the 50 empty Sheets **once** — new books afterwards need no new files.
 - Default subfolder is `notebooklm/` (was `per_book/`). Legacy `per_book/` one-file-per-book Sheets are **never** auto-deleted; the user retires them manually.
 - CLI flags:
   - `--apply`: actually write (default is dry-run)
   - `--folder <name>`: destination subfolder name (default: `notebooklm`)
   - `--prefix <str>`: filename prefix for volume/index files (default: `k2n`)
-  - `--parent-folder <FOLDER_ID>`: explicit Drive folder ID to host the destination subfolder. Required when the master spreadsheet lives in "My Drive" root (Drive API cannot resolve its parent for service-account-shared files at the root). Validated up-front via `_validate_parent_folder()`: must be an accessible folder with `canAddChildren=true`
+  - `--parent-folder <FOLDER_ID>`: explicit Drive folder ID to host the destination subfolder. Required when the master spreadsheet lives in "My Drive" root (Drive API cannot resolve its parent for service-account-shared files at the root) **or inside a trashed folder** (auto-detection then resolves to the trashed parent). Validated up-front via `_validate_parent_folder()`: must be an accessible folder with `canAddChildren=true`
+- **Parent-folder resolution order**: `--parent-folder` flag → `NOTEBOOKLM_PARENT_FOLDER_ID` env var (`PARENT_FOLDER_ENV_VAR`) → auto-detect from the master's own Drive parent. Set the env var in `config/KEYS.env` (the folder ID of the live folder that hosts `notebooklm/`) for a persistent setting so `--apply` needs no flag each run; the env var is also `_validate_parent_folder()`-checked.
 - Pure helpers (`safe_title_for_filename`, `volume_for_book_id`, `volume_filename`, `index_filename`, `all_target_filenames`, `group_books_by_volume`, `volume_rows`, `index_rows`, `group_highlights_by_book`) are covered by `test/test_split_per_book.py`; runtime deps (`gspread`, `google-auth`) are guarded so tests can import the module without them
  
 ### `scripts/add_manual_highlights.py`
@@ -426,4 +434,5 @@ The following are git-ignored and must not be committed:
 - `storage_state.json` is reused on the next run if it already exists (no explicit expiry logic).
 - The GUI requires a display server (X11/Wayland). Running headlessly in CI will fail unless a virtual display is provided.
 - Service accounts have **0 bytes of personal Drive storage**. They can edit files shared with them and create folders (0 bytes), but they cannot own new files in "My Drive" — Google rejects creation with `storageQuotaExceeded`. Workarounds: (a) Workspace Shared Drive, (b) OAuth user credentials, (c) pre-create files manually. `scripts/split_per_book.py` uses option (c).
-- For files in "My Drive" root that are shared with the service account (not owned), the Drive API may return an empty `parents` field. `scripts/split_per_book.py` handles this via the `--parent-folder` CLI flag.
+- For files in "My Drive" root that are shared with the service account (not owned), the Drive API may return an empty `parents` field. `scripts/split_per_book.py` handles this via the `--parent-folder` CLI flag or the `NOTEBOOKLM_PARENT_FOLDER_ID` env var.
+- A spreadsheet whose **parent folder was trashed** is still readable/writable by ID (the service account writes succeed), but it is invisible in the owner's normal Drive view and will be **permanently deleted** when the trash auto-purges (~30 days). If `01_books`/`02_highlights` writes "succeed" but the user can't see them, check the master's `trashed` flag via the Drive API (`files.get?fields=trashed,explicitlyTrashed,parents`). In that state, `split_per_book` auto-detection resolves the master's parent to the trashed folder, so set `NOTEBOOKLM_PARENT_FOLDER_ID` (or `--parent-folder`) to the live destination folder.
