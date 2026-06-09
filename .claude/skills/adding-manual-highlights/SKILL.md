@@ -184,7 +184,40 @@ only Notion is updated — relay that to the user.
 
 Optional flags: `--notion-only` / `--sheets-only` to target one destination.
 
-## Step 6 — Clean up
+## Step 6 — Propagate to the 50 NotebookLM sheets (Google Sheets only)
+
+`add_manual_highlights` writes only to the **master** (`01_books` /
+`02_highlights`), exactly like the Kindle scraper (`main.py`). But the user
+*reads* their highlights from the **50 fixed NotebookLM sheets**
+(`k2n_index` + `k2n_vol_01..49` in the `notebooklm/` folder), which are a
+**derived copy** produced by `scripts/split_per_book.py`. So a manual add is
+**not visible to the user until you run the split** — this is the step that was
+historically missing and made "I can't find it in Sheets" happen.
+
+After a successful `--apply` (and only if Google Sheets is configured), run:
+
+```bash
+py -m scripts.split_per_book --apply
+```
+
+- This reads the master and rewrites all 50 sheets (idempotent). The new book
+  lands in its pinned volume and the index row appears. It takes ~2 minutes:
+  writes are **paced** to respect the Sheets API's ~60-writes/min quota and
+  **retried on a 429**, so a single run now completes all 50 files (an
+  unthrottled run used to die around `k2n_vol_27`, leaving later volumes stale).
+- **Destination folder**: the script needs to know which Drive folder hosts the
+  `notebooklm/` subfolder. Preferred: the user sets `NOTEBOOKLM_PARENT_FOLDER_ID`
+  in `config/KEYS.env` once (the folder ID of the live `kindle2notion` folder);
+  then no flag is needed. Otherwise pass `--parent-folder <FOLDER_ID>`. (This is
+  required while the master spreadsheet's own parent can't be auto-resolved —
+  e.g. it sits in 'My Drive' root or inside a trashed folder.)
+- Preview first with a dry-run (drop `--apply`) if you want to show the user the
+  plan. Report honestly: if any file is `[missing]`, tell the user which 50-file
+  names to create once (the script lists them).
+- If Google Sheets is **not** configured, there is no 50-sheet set — skip this
+  step (Notion already holds the highlight).
+
+## Step 7 — Clean up
 
 Delete the temporary `*.json` input file after a successful run (it is
 git-ignored but leaving it around is untidy). Confirm to the user what was added.
@@ -204,7 +237,9 @@ git-ignored but leaving it around is untidy). Confirm to the user what was added
 
 Use this when you are in a **claude.ai/code cloud session** connected to this
 repo (typical "from my phone" case). It is just **Local mode with `python`**, so
-Steps 1–6 above apply verbatim — only the launcher changes (`py` → `python`).
+Steps 1–7 above apply verbatim — only the launcher changes (`py` → `python`).
+That includes Step 6 (`python -m scripts.split_per_book --apply`); set
+`NOTEBOOKLM_PARENT_FOLDER_ID` as a cloud env var so it needs no `--parent-folder`.
 
 One-time setup the user does in the cloud environment (relay these if they
 haven't; you cannot set them yourself):
