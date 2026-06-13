@@ -14,10 +14,9 @@ Kindle Notebook のハイライトを取得し、Notion データベースへ保
 
 - Kindle ノートブックからハイライトを自動取得（Playwright スクレイピング）
 - Notion データベースへ保存（重複スキップ付き）
-- Google スプレッドシートへ保存（`01_books` / `02_highlights` の v2 スキーマ）
-- 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`）
+- Google スプレッドシート（NotebookLM 用の 49 ボリューム＋索引＝固定 50 ファイル）へ取得と同時に自動反映（`split_per_book.py`）
+- 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`、同じ 50 ファイルへ反映）
 - Web UI フォーム・HTTP API・Cloud CLI からスマホや外出先で手動ハイライト追加
-- NotebookLM 用に 49 ボリューム＋索引の固定 50 ファイルへ分割（`split_per_book.py`）
 
 ## 前提条件
 
@@ -72,10 +71,11 @@ AMAZON_PASSWORD=
 NOTION_API_KEY=
 NOTION_DATABASE_ID=
 
-# Google Sheets を使う場合のみ設定
+# Google Sheets（NotebookLM 50 ファイル）を使う場合のみ設定
 GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=
-# Worksheet 名は v2 で固定なので GOOGLE_SHEETS_WORKSHEET_NAME は廃止
 GOOGLE_SHEETS_SPREADSHEET_ID=
+# 50 ファイルを置いた Drive フォルダ ID（推奨。旧マスタ廃止後はこれが主な参照先）
+NOTEBOOKLM_PARENT_FOLDER_ID=
 
 # Web UI に Basic 認証を付けたい場合のみ設定
 WEB_USERNAME=
@@ -160,30 +160,17 @@ py -3 -m scripts.add_manual_highlights --title "..." --highlight "..." --apply
 py -3 -m scripts.add_manual_highlights --list-books --title "タイトル"
 ```
 
-### NotebookLM 向けボリューム分割 (`split_per_book.py`)
+### NotebookLM 向け 50 ファイル (`split_per_book.py`)
 
-マスタシートの内容を 49 ボリューム＋索引 = 計 50 ファイルへ書き出します。  
+ハイライトは取得・手動追加と**同時に** NotebookLM 用の 49 ボリューム＋索引（計 50 ファイル）へ自動反映されます（`split_per_book.sync_notes_to_notebooklm`）。`config/KEYS.env` の `NOTEBOOKLM_PARENT_FOLDER_ID` に 50 ファイルを置いた Drive フォルダ ID を設定してください。50 ファイルはサービスアカウントでは作成できないため、初回のみ手動で空シートを作成します。  
 詳細: [`DOCUMENTS/NOTEBOOKLM_SETUP_TODO.md`](DOCUMENTS/NOTEBOOKLM_SETUP_TODO.md)
 
 ```bash
-# ドライラン
-py -3 -m scripts.split_per_book --parent-folder FOLDER_ID
-
-# 本番書き込み
-py -3 -m scripts.split_per_book --apply --parent-folder FOLDER_ID
-
-# サブフォルダ名・ファイル名プレフィックスを変更する場合（デフォルト: notebooklm / k2n）
-py -3 -m scripts.split_per_book --apply --parent-folder FOLDER_ID --folder notebooklm --prefix k2n
+# 索引をボリュームから再構築するだけの安全な保守コマンド（通常は不要）
+py -3 -m scripts.split_per_book --apply
 ```
 
-### v1 → v2 スキーマ移行 (`migrate_legacy_sheet.py`)
-
-旧 `Sheet1`（v1 フラットスキーマ）のデータを `01_books` / `02_highlights`（v2）へ移行します。初回のみ必要。
-
-```bash
-py -3 -m scripts.migrate_legacy_sheet          # ドライラン
-py -3 -m scripts.migrate_legacy_sheet --apply  # 本番書き込み
-```
+> 旧マスタ（`01_books` / `02_highlights`）は廃止済みです。`--from-master` は旧マスタから 50 ファイルを上書きする**レガシー専用**フラグで、最近のハイライトを失う恐れがあるため通常は使いません。`migrate_legacy_sheet.py` も同様に非推奨です。
 
 ## デプロイ
 

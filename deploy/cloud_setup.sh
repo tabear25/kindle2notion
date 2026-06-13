@@ -13,6 +13,9 @@
 #       NOTION_API_KEY, NOTION_DATABASE_ID,
 #       GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE  (the service-account JSON, as a string),
 #       GOOGLE_SHEETS_SPREADSHEET_ID,
+#       NOTEBOOKLM_PARENT_FOLDER_ID         (Drive folder ID hosting the notebooklm/
+#                                            50-file set; the sync writes there, since
+#                                            the 01_books/02_highlights master is retired),
 #       AMAZON_EMAIL, AMAZON_PASSWORD       (still required by main.load_config(),
 #                                            even though the manual path is unused)
 #   - Network access: "Full", or a custom allowlist that includes

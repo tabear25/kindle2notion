@@ -3,7 +3,9 @@
 The Kindle scraper (``main.py``) can only reach books bought on Amazon Kindle.
 This script is the companion path for everything else -- paper books, PDFs,
 library loans, e-books from other stores -- so their highlights land in exactly
-the same Notion database and Google Sheets v2 schema as the scraped ones.
+the same Notion database and NotebookLM volume files as the scraped ones (via
+``split_per_book.sync_notes_to_notebooklm``; the retired ``01_books`` /
+``02_highlights`` master is no longer written).
 
 It is meant to be driven by an AI assistant (e.g. Claude Code): the assistant
 collects the book title + highlights from the user, writes them to a small JSON
@@ -271,9 +273,10 @@ def build_books_result(
 ) -> dict:
     """Return the existing-books result (the same dict ``--list-books`` prints).
 
-    Read-only: loads config and reads ``01_books`` via
-    :func:`toSheets.list_existing_books`, never writing. When ``title`` is given,
-    adds ``matches_for_title`` -- the existing titles most similar to it (see
+    Read-only: loads config and reads the NotebookLM index file via
+    :func:`split_per_book.list_books_from_index`, never writing. (The retired
+    ``01_books`` master is no longer used.) When ``title`` is given, adds
+    ``matches_for_title`` -- the existing titles most similar to it (see
     :func:`find_similar_titles`) so a typo'd title surfaces the real book to
     merge into. ``matches_only`` omits the (potentially large) full ``books``
     list and is only meaningful together with ``title``.
@@ -290,9 +293,9 @@ def build_books_result(
             "in config/KEYS.env."
         )
 
-    from google_sheets import toSheets  # noqa: E402
+    from scripts import split_per_book  # noqa: E402
 
-    books = toSheets.list_existing_books(
+    books = split_per_book.list_books_from_index(
         main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE, main.GOOGLE_SHEETS_SPREADSHEET_ID
     )
     result: dict = {"count": len(books)}
@@ -357,18 +360,26 @@ def write_notes(notes: list[dict], targets: list[str], *, apply: bool = True) ->
         if not main.GOOGLE_SHEETS_ENABLED:
             result["sheets"] = {"not_configured": True}
         else:
-            from google_sheets import toSheets  # noqa: E402
+            from scripts import split_per_book  # noqa: E402
 
-            summary = toSheets.save_notes_to_google_sheets(
-                main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
-                main.GOOGLE_SHEETS_SPREADSHEET_ID,
-                notes,
-            )
+            summary = split_per_book.sync_notes_to_notebooklm(notes, apply=True)
             result["sheets"] = summary
             if summary["skipped_invalid"]:
                 result["problems"].append(
-                    f"{summary['skipped_invalid']} Sheets row(s) dropped "
+                    f"{summary['skipped_invalid']} highlight(s) dropped "
                     "(empty title/content)"
+                )
+            missing = summary.get("missing_files") or []
+            missing_vols = [name for name in missing if not name.endswith("_index")]
+            index_missing = any(name.endswith("_index") for name in missing)
+            if missing_vols:
+                result["problems"].append(
+                    f"{len(missing_vols)} NotebookLM volume file(s) missing "
+                    f"({', '.join(missing_vols)}); those highlights were NOT written"
+                )
+            if index_missing:
+                result["problems"].append(
+                    "NotebookLM index file missing; the book catalogue is stale"
                 )
 
     return result
@@ -420,7 +431,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--list-books",
         action="store_true",
-        help="read-only: print existing books (JSON) from Google Sheets 01_books "
+        help="read-only: print existing books (JSON) from the NotebookLM index file "
         "and exit. Use this to fuzzy-match a user title against titles already on "
         "record before adding, so typos don't create a duplicate book.",
     )
@@ -527,9 +538,10 @@ def _run_list_books(args) -> int:
 
     If ``--title`` is also given, adds ``"matches_for_title"`` -- the existing
     titles most similar to it (difflib over NFKC-normalised forms), so a typo'd
-    title surfaces the real book to merge into. The actual work lives in
-    :func:`build_books_result` (shared with the web API); here we just print it
-    and turn :class:`SheetsNotConfigured` into a clean ``SystemExit``.
+    title surfaces the real book to merge into. Books are read from the NotebookLM
+    index file (the retired ``01_books`` master is no longer used). The actual work
+    lives in :func:`build_books_result` (shared with the web API); here we just
+    print it and turn :class:`SheetsNotConfigured` into a clean ``SystemExit``.
     """
     try:
         result = build_books_result(

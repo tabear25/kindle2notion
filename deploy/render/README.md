@@ -64,7 +64,8 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 | `WEB_USERNAME` | ⭐ 強く推奨 | Web UI のログイン ID |
 | `WEB_PASSWORD` | ⭐ 強く推奨 | Web UI のログインパスワード |
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` | 任意 | サービスアカウント JSON（**文字列そのものを貼り付け**） |
-| `GOOGLE_SHEETS_SPREADSHEET_ID` | 任意 | エクスポート先スプレッドシート ID |
+| `GOOGLE_SHEETS_SPREADSHEET_ID` | 任意 | Sheets 有効化のゲート＋フォルダ解決の予備（旧マスタ ID でも可） |
+| `NOTEBOOKLM_PARENT_FOLDER_ID` | 任意 | NotebookLM 50 ファイルを置いた Drive フォルダ ID。Sheets 同期の主な参照先（旧マスタ廃止後はこれが必須級） |
 | `STORAGE_STATE_PATH` | 任意 | セッション保存先（永続ディスク利用時のみ設定） |
 
 > **⚠️ `WEB_USERNAME` / `WEB_PASSWORD` は必ず設定してください。**

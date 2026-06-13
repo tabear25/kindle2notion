@@ -14,9 +14,11 @@ description: >-
 
 The user reads books that are not on Amazon Kindle (paper books, PDFs, library
 loans, other e-book stores). Their highlights cannot be scraped, so collect them
-in conversation and write them into the **same** Notion database + Google Sheets
-the Kindle sync uses. The output is indistinguishable from scraped highlights
-except for the `source` column on `02_highlights`.
+in conversation and write them into the **same** Notion database + the same
+NotebookLM Google Sheets layout the Kindle sync uses. The output is
+indistinguishable from scraped highlights. The write goes **straight into the 50
+NotebookLM files** (`split_per_book.sync_notes_to_notebooklm`) — there is no
+separate "run the split" step anymore (see Step 6).
 
 Always converse with the user in **Japanese** (this is a Japanese user).
 
@@ -60,12 +62,14 @@ Required:
 - **ハイライト本文** (`content`) — one or more. A page number (`page`) or Kindle
   location (`location`) per highlight is optional but nice to have.
 
-Optional book metadata (only stored on Google Sheets `01_books`, only when the
-book is newly created — ask lightly, don't force it):
-- `author` 著者 / `genre` ジャンル / `reading_status` 読書状況（例: 読了）/
-  `finished_at` 読了日（YYYY-MM-DD）/ `rating` 評価 / `amazon_asin` / `cover_url` /
-  `notion_url`
-- `source` — defaults to `"manual"`. Use `"physical"` for paper books if helpful.
+Optional book metadata — ⚠️ **currently NOT persisted anywhere**. These fields
+(`author` 著者 / `genre` / `reading_status` / `finished_at` / `rating` /
+`amazon_asin` / `cover_url` / `notion_url`) and the `source` label used to live on
+the retired `01_books` master; the NotebookLM 50-file layout has no columns for
+them and Notion stores only Title/Content/Page. The payload still *accepts* them
+(harmless), but they will not be saved. So don't go out of your way to collect
+metadata — focus on the title + highlights (+ optional page/location). Mention to
+the user that metadata isn't stored if they offer it.
 
 ## Step 2 — Reconcile the title against existing books (typo guard)
 
@@ -92,8 +96,8 @@ This is **read-only** (it never writes). `--matches-only` keeps the output compa
 ```
 
 > If Google Sheets is **not configured**, this command exits with a message
-> (it reads from `01_books`). In that case skip the reconcile and just confirm
-> the title spelling directly with the user before continuing.
+> (it reads the NotebookLM index file). In that case skip the reconcile and just
+> confirm the title spelling directly with the user before continuing.
 
 How to act on it:
 - **`is_exact_normalized: true`** (score 1.0) — same book modulo full/half-width
@@ -144,11 +148,9 @@ Notes:
   without the `books` wrapper.
 - A highlight can be a bare string (`"本文だけ"`) when there is no page/location.
 - Put a physical book's page number in `page`; it appears in Notion's *Page*
-  property. On Google Sheets `02_highlights`, a page-only highlight is stored in
-  the **`location`** column (the `page` column is reserved for highlights that
-  also carry a Kindle `location`). The value is never lost — it is just stored
-  under `location` for page-only entries, mirroring how Kindle-scraped rows
-  behave, so manual and scraped highlights stay consistent.
+  property. In the NotebookLM volume file, a page-only highlight is stored in the
+  **`location`** column (volume rows carry `location`, falling back to `page`), so
+  the value is never lost and manual + scraped highlights stay consistent.
 
 ## Step 4 — Dry-run and confirm (do not skip)
 
@@ -184,38 +186,33 @@ only Notion is updated — relay that to the user.
 
 Optional flags: `--notion-only` / `--sheets-only` to target one destination.
 
-## Step 6 — Propagate to the 50 NotebookLM sheets (Google Sheets only)
+## Step 6 — (No manual split needed — propagation is automatic)
 
-`add_manual_highlights` writes only to the **master** (`01_books` /
-`02_highlights`), exactly like the Kindle scraper (`main.py`). But the user
-*reads* their highlights from the **50 fixed NotebookLM sheets**
-(`k2n_index` + `k2n_vol_01..49` in the `notebooklm/` folder), which are a
-**derived copy** produced by `scripts/split_per_book.py`. So a manual add is
-**not visible to the user until you run the split** — this is the step that was
-historically missing and made "I can't find it in Sheets" happen.
+**This step no longer requires any action.** `add_manual_highlights --apply`
+writes **directly** into the 50 NotebookLM files via
+`split_per_book.sync_notes_to_notebooklm`: the new highlights land in their
+pinned volume(s) and the index is refreshed in the **same run** as Step 5. There
+is no separate `split_per_book --apply` to run, and there is no `01_books` /
+`02_highlights` master in the loop anymore.
 
-After a successful `--apply` (and only if Google Sheets is configured), run:
-
-```bash
-py -m scripts.split_per_book --apply
-```
-
-- This reads the master and rewrites all 50 sheets (idempotent). The new book
-  lands in its pinned volume and the index row appears. It takes ~2 minutes:
-  writes are **paced** to respect the Sheets API's ~60-writes/min quota and
-  **retried on a 429**, so a single run now completes all 50 files (an
-  unthrottled run used to die around `k2n_vol_27`, leaving later volumes stale).
-- **Destination folder**: the script needs to know which Drive folder hosts the
-  `notebooklm/` subfolder. Preferred: the user sets `NOTEBOOKLM_PARENT_FOLDER_ID`
-  in `config/KEYS.env` once (the folder ID of the live `kindle2notion` folder);
-  then no flag is needed. Otherwise pass `--parent-folder <FOLDER_ID>`. (This is
-  required while the master spreadsheet's own parent can't be auto-resolved —
-  e.g. it sits in 'My Drive' root or inside a trashed folder.)
-- Preview first with a dry-run (drop `--apply`) if you want to show the user the
-  plan. Report honestly: if any file is `[missing]`, tell the user which 50-file
-  names to create once (the script lists them).
-- If Google Sheets is **not** configured, there is no 50-sheet set — skip this
-  step (Notion already holds the highlight).
+What this means in practice:
+- The Step 5 `[Google Sheets] ...` summary already reflects what was written to
+  the NotebookLM files. If Google Sheets is not configured, only Notion is
+  updated (relay that).
+- **Folder location**: the user must have `NOTEBOOKLM_PARENT_FOLDER_ID` set in
+  `config/KEYS.env` — the Drive folder ID that **holds the 50 files** (or a parent
+  containing a `notebooklm/` subfolder; both work) so the sync can find them. If
+  it's unset and the fallback can't resolve the folder, the run errors — relay
+  that and ask the user to set it.
+- **Missing files**: the service account cannot create Drive files. If a needed
+  volume file (or the index) doesn't exist yet, the run reports it as a partial
+  failure (`[partial failure] ... NotebookLM ... file(s) missing`) and those
+  highlights are NOT written. Tell the user which file names to create once (as
+  empty Google Sheets with those exact names), then re-run.
+- `py -m scripts.split_per_book --apply` still exists but now only **rebuilds the
+  index from the volumes** (a safe recovery tool). You normally never need it.
+  Never use `--from-master` here — it overwrites all 50 files from the retired
+  master and would clobber recent highlights.
 
 ## Step 7 — Clean up
 
@@ -226,20 +223,24 @@ git-ignored but leaving it around is untidy). Confirm to the user what was added
 
 - The Python launcher on this machine is `py` (not `python`). Run scripts as
   `py -m scripts.add_manual_highlights ...` from the project root.
-- Book metadata (`author`, etc.) is written to `01_books` **only when the book row
-  is first created**. Adding more highlights later does not overwrite it; the user
-  edits the sheet directly to change metadata.
-- Notion stores only Title / Content / Page (no author/source). The richer
-  metadata lives on Google Sheets `01_books`.
+- Book metadata (`author`, `genre`, `rating`, …) and the `source` label are **not
+  persisted** in the current model — they only ever lived on the retired
+  `01_books`. Notion stores only Title / Content / Page, and the NotebookLM
+  files have no metadata/source columns. Don't promise the user these are saved.
 - This never runs the Kindle scraper and never touches `storage_state.json`.
+- `NOTEBOOKLM_PARENT_FOLDER_ID` must point at the live Drive folder that **holds
+  the 50 files** (or a parent with a `notebooklm/` subfolder — both work). The
+  retired master spreadsheet should NOT be relied on for folder resolution (it
+  may be trashed).
 
 ## Cloud mode — run the CLI inside a cloud Claude Code session
 
 Use this when you are in a **claude.ai/code cloud session** connected to this
 repo (typical "from my phone" case). It is just **Local mode with `python`**, so
 Steps 1–7 above apply verbatim — only the launcher changes (`py` → `python`).
-That includes Step 6 (`python -m scripts.split_per_book --apply`); set
-`NOTEBOOKLM_PARENT_FOLDER_ID` as a cloud env var so it needs no `--parent-folder`.
+The `--apply` in Step 5 writes straight into the 50 NotebookLM files (no separate
+split step — see Step 6); set `NOTEBOOKLM_PARENT_FOLDER_ID` as a cloud env var so
+the sync can locate the `notebooklm/` folder.
 
 One-time setup the user does in the cloud environment (relay these if they
 haven't; you cannot set them yourself):
@@ -344,14 +345,19 @@ curl -s -u "$USER:$PASS" -H "Content-Type: application/json" \
 ```json
 {"applied": true, "ok": true,
  "notion": {"added":1,"skipped":0,"failed":0,"total":1},
- "sheets": {"new_books":1,"new_highlights":1,"skipped_duplicates":0,"skipped_invalid":0,"total_notes":1},
+ "sheets": {"new_books":1,"new_highlights":1,"skipped_duplicates":0,"skipped_invalid":0,
+            "total_notes":1,"missing_files":[],"touched_volumes":1},
  "problems": []}
 ```
 
+The `sheets` summary comes from the NotebookLM sync (`sync_notes_to_notebooklm`):
+`touched_volumes` is how many volume files were rewritten, and `missing_files`
+lists any of the 50 files that don't exist yet (those highlights were NOT written).
+
 **Always check `ok`, not just the HTTP status** — a partial write failure still
-returns HTTP 200 with `"ok": false` and a populated `problems` array. In that
-case tell the user **in Japanese** exactly what did not get written and offer to
-retry; do not report 「追加しました」. `"sheets": {"not_configured": true}` means
-only Notion was written (relay that). Optional body flags: `"notion_only": true`
-/ `"sheets_only": true` to target one destination. There is no temp file to clean
-up in remote mode.
+returns HTTP 200 with `"ok": false` and a populated `problems` array (a missing
+volume/index file shows up here). In that case tell the user **in Japanese**
+exactly what did not get written and offer to retry; do not report 「追加しました」.
+`"sheets": {"not_configured": true}` means only Notion was written (relay that).
+Optional body flags: `"notion_only": true` / `"sheets_only": true` to target one
+destination. There is no temp file to clean up in remote mode.
