@@ -1,9 +1,8 @@
 name: Deploy to VPS
 
+# NOTE: The VPS is currently not in service. Automatic deploys on push are
+# disabled; run this workflow manually from the Actions tab if the VPS returns.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
