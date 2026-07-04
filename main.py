@@ -9,6 +9,8 @@ import amazon.login
 from book_transformer import transformer
 from config import BASE_DIR, load_env_file
 from notion import toNotion
+from storage import get_store
+from storage.session_store import hydrate_session_file, persist_session_file
 
 nest_asyncio.apply()
 load_env_file()
@@ -79,33 +81,80 @@ def prompt_book_limit():
     return ask_book_limit()
 
 
+def _get_store_or_none():
+    """The operational store is best-effort: a broken store must never
+    block a sync run (session falls back to the local file only)."""
+    try:
+        return get_store()
+    except Exception as exc:
+        print(f"Warning: operational store unavailable: {exc}")
+        return None
+
+
 def run(playwright, max_books=None, progress_callback=None,
         two_factor_callback=None, headless_login=False):
     load_config()
-    browser = playwright.chromium.launch(headless=headless_login, args=BROWSER_LAUNCH_ARGS)
-    context = browser.new_context()
-    page = context.new_page()
+    store = _get_store_or_none()
+    hydrate_session_file(store, STORAGE_STATE_PATH)
 
+    browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
     try:
-        amazon.login.perform_login(
-            page,
-            AMAZON_EMAIL,
-            AMAZON_PASSWORD,
-            two_factor_callback=two_factor_callback,
-            allow_manual_auth=not headless_login,
-        )
-        STORAGE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        context.storage_state(path=str(STORAGE_STATE_PATH))
+        # Fast path: a saved session that still reaches the notebook skips
+        # the whole login (and 2FA) and scrapes right away.
+        if STORAGE_STATE_PATH.exists():
+            context = browser.new_context(storage_state=str(STORAGE_STATE_PATH))
+            page = context.new_page()
+            if amazon.login.is_session_valid(page):
+                notes = transformer.extract_notes(page, max_books=max_books,
+                                                  progress_callback=progress_callback)
+                persist_session_file(context, store, STORAGE_STATE_PATH)
+                return notes
+            context.close()
+
+        if headless_login:
+            # Web mode: log in headless in a fresh context of the same
+            # browser, then scrape in that authenticated context.
+            context = browser.new_context()
+            page = context.new_page()
+            amazon.login.perform_login(
+                page,
+                AMAZON_EMAIL,
+                AMAZON_PASSWORD,
+                two_factor_callback=two_factor_callback,
+                allow_manual_auth=False,
+            )
+            persist_session_file(context, store, STORAGE_STATE_PATH)
+            notes = transformer.extract_notes(page, max_books=max_books,
+                                              progress_callback=progress_callback)
+            persist_session_file(context, store, STORAGE_STATE_PATH)
+            return notes
     finally:
         browser.close()
 
-    headless_browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
-    headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
-    headless_page = headless_context.new_page()
-
+    # GUI mode with no usable session: visible browser for the login (2FA
+    # dialog / manual auth on the page), then scrape headless as before.
+    login_browser = playwright.chromium.launch(headless=False, args=BROWSER_LAUNCH_ARGS)
     try:
+        login_context = login_browser.new_context()
+        login_page = login_context.new_page()
+        amazon.login.perform_login(
+            login_page,
+            AMAZON_EMAIL,
+            AMAZON_PASSWORD,
+            two_factor_callback=two_factor_callback,
+            allow_manual_auth=True,
+        )
+        persist_session_file(login_context, store, STORAGE_STATE_PATH)
+    finally:
+        login_browser.close()
+
+    headless_browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
+    try:
+        headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
+        headless_page = headless_context.new_page()
         notes = transformer.extract_notes(headless_page, max_books=max_books,
                                           progress_callback=progress_callback)
+        persist_session_file(headless_context, store, STORAGE_STATE_PATH)
         return notes
     finally:
         headless_browser.close()
