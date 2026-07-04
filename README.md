@@ -176,15 +176,6 @@ py -3 -m scripts.split_per_book --apply --parent-folder FOLDER_ID
 py -3 -m scripts.split_per_book --apply --parent-folder FOLDER_ID --folder notebooklm --prefix k2n
 ```
 
-### v1 → v2 スキーマ移行 (`migrate_legacy_sheet.py`)
-
-旧 `Sheet1`（v1 フラットスキーマ）のデータを `01_books` / `02_highlights`（v2）へ移行します。初回のみ必要。
-
-```bash
-py -3 -m scripts.migrate_legacy_sheet          # dry-run
-py -3 -m scripts.migrate_legacy_sheet --apply  # 本番書き込み
-```
-
 ## デプロイ
 
 | 方式 | 用途 | 詳細 |
