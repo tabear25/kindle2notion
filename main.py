@@ -9,7 +9,7 @@ import amazon.login
 from book_transformer import transformer
 from config import BASE_DIR, load_env_file
 from notion import toNotion
-from storage import get_store
+from storage import get_store_or_none
 from storage.session_store import hydrate_session_file, persist_session_file
 
 nest_asyncio.apply()
@@ -81,20 +81,10 @@ def prompt_book_limit():
     return ask_book_limit()
 
 
-def _get_store_or_none():
-    """The operational store is best-effort: a broken store must never
-    block a sync run (session falls back to the local file only)."""
-    try:
-        return get_store()
-    except Exception as exc:
-        print(f"Warning: operational store unavailable: {exc}")
-        return None
-
-
 def run(playwright, max_books=None, progress_callback=None,
         two_factor_callback=None, headless_login=False):
     load_config()
-    store = _get_store_or_none()
+    store = get_store_or_none()
     hydrate_session_file(store, STORAGE_STATE_PATH)
 
     browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)

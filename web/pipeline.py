@@ -70,10 +70,12 @@ class PipelineState:
             return self.events[index:], len(self.events)
 
 
-def run_pipeline(state, max_books):
+def run_pipeline(state, max_books, full_resync=False):
     """Execute the full scrape -> Notion -> Sheets pipeline.
 
     Intended to run in a background :class:`threading.Thread`.
+    ``full_resync=True`` rebuilds the Notion dedup cache from the live
+    database before writing (restores pure-scan semantics for this run).
     """
     state.status = "running"
     state._push_event("started", {})
@@ -95,6 +97,7 @@ def run_pipeline(state, max_books):
             main.NOTION_DATABASE_ID,
             notes,
             progress_callback=state.progress_callback,
+            force_resync=full_resync,
         )
 
         if main.GOOGLE_SHEETS_ENABLED:

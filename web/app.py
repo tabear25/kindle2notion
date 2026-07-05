@@ -87,13 +87,14 @@ def create_app():
         try:
             body = request.get_json(silent=True) or {}
             max_books = _parse_max_books(body.get("max_books"))
+            full_resync = bool(body.get("full_resync", False))
 
             # Reset state for a new run
             state = PipelineState()
 
             worker = threading.Thread(
                 target=_run_and_release,
-                args=(state, max_books),
+                args=(state, max_books, full_resync),
                 daemon=True,
             )
             worker.start()
@@ -105,9 +106,9 @@ def create_app():
             run_lock.release()
             raise
 
-    def _run_and_release(pipeline_state, max_books):
+    def _run_and_release(pipeline_state, max_books, full_resync=False):
         try:
-            run_pipeline(pipeline_state, max_books)
+            run_pipeline(pipeline_state, max_books, full_resync=full_resync)
         finally:
             run_lock.release()
 

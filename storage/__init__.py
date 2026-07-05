@@ -33,6 +33,15 @@ def get_store() -> AppStore:
     return _store
 
 
+def get_store_or_none() -> AppStore | None:
+    """Best-effort variant: the operational store must never block a run."""
+    try:
+        return get_store()
+    except Exception as exc:
+        print(f"Warning: operational store unavailable: {exc}")
+        return None
+
+
 def reset_store_for_tests() -> None:
     global _store
     _store = None
