@@ -20,7 +20,7 @@ from typing import Iterable
 
 import gspread
 from google.oauth2.service_account import Credentials
-from gspread.exceptions import WorksheetNotFound
+from gspread.exceptions import APIError, SpreadsheetNotFound, WorksheetNotFound
 from tqdm import tqdm
 
 from note_utils import (
@@ -46,6 +46,12 @@ HIGHLIGHTS_SHEET = "02_highlights"
 _BOOKS_DEFAULT_ROWS = 200
 _HIGHLIGHTS_DEFAULT_ROWS = 5000
 
+# (connect, read) timeout in seconds applied to every Sheets/Drive request.
+# Without an explicit timeout, a stalled network call to Google's API blocks the
+# worker thread forever, which the GUI / web UI surfaces as a "frozen" save.
+# With it, a stall fails fast with an error instead of hanging indefinitely.
+REQUEST_TIMEOUT = (10, 60)
+
 
 def _build_client(service_account_file):
     service_account_source = (service_account_file or "").strip()
@@ -63,7 +69,33 @@ def _build_client(service_account_file):
             service_account_source,
             scopes=SCOPES,
         )
-    return gspread.authorize(credentials)
+    client = gspread.authorize(credentials)
+    client.set_timeout(REQUEST_TIMEOUT)
+    return client
+
+
+def _open_spreadsheet(client, spreadsheet_id):
+    """Open the spreadsheet by key, turning a missing / inaccessible sheet into a
+    clear, actionable error.
+
+    A wrong, deleted, or un-shared ``GOOGLE_SHEETS_SPREADSHEET_ID`` otherwise
+    surfaces as a bare ``SpreadsheetNotFound`` / 404 with no hint about the fix.
+    """
+    try:
+        return client.open_by_key(spreadsheet_id)
+    except SpreadsheetNotFound as exc:
+        raise RuntimeError(
+            "Google スプレッドシートを開けませんでした"
+            f"（GOOGLE_SHEETS_SPREADSHEET_ID={spreadsheet_id!r}）。"
+            "IDが間違っている、スプレッドシートが削除済み、または対象がサービスアカウントに"
+            "共有されていない可能性があります。config/KEYS.env のIDと、スプレッドシートの"
+            "共有設定（サービスアカウントを編集者として共有）を確認してください。"
+        ) from exc
+    except APIError as exc:
+        raise RuntimeError(
+            "Google スプレッドシートへのアクセスに失敗しました"
+            f"（GOOGLE_SHEETS_SPREADSHEET_ID={spreadsheet_id!r}）: {exc}"
+        ) from exc
 
 
 def _get_or_create_worksheet(spreadsheet, name: str, headers: list, default_rows: int):
@@ -115,7 +147,7 @@ def list_existing_books(service_account_file, spreadsheet_id) -> list[dict]:
     Returns ``[]`` if the sheet is missing or empty.
     """
     client = _build_client(service_account_file)
-    spreadsheet = client.open_by_key(spreadsheet_id)
+    spreadsheet = _open_spreadsheet(client, spreadsheet_id)
     try:
         worksheet = spreadsheet.worksheet(BOOKS_SHEET)
     except WorksheetNotFound:
@@ -197,7 +229,7 @@ def save_notes_to_google_sheets(
     """
     notes = list(notes)
     client = _build_client(service_account_file)
-    spreadsheet = client.open_by_key(spreadsheet_id)
+    spreadsheet = _open_spreadsheet(client, spreadsheet_id)
 
     books_ws = _get_or_create_worksheet(
         spreadsheet, BOOKS_SHEET, BOOKS_HEADERS, _BOOKS_DEFAULT_ROWS
