@@ -31,6 +31,19 @@ services:
         sync: false
       - key: WEB_PASSWORD
         sync: false
+      # --- Turso (operational store) -----------------------------------
+      # Persists the Amazon session across restarts (no more 2FA per cold
+      # start on the free plan) and caches the Notion dedup keys.
+      # Leave blank to fall back to an ephemeral local SQLite file.
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      # --- Vercel frontend ---------------------------------------------
+      # Exact origin of the static frontend, e.g. https://kindle2notion.vercel.app
+      # Leave blank if you only use the Render-served UI (same origin).
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
       # --- Optional: Google Sheets export (leave blank to disable) ----
       - key: GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE
         sync: false
@@ -39,18 +52,20 @@ services:
       # --- Runtime ----------------------------------------------------
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: SCRAPE_MODE
+        value: "xhr"            # "dom" forces the legacy click-driven scraper
 
     # ----------------------------------------------------------------
-    # Persistent disk — PAID plans only. Attaching a disk makes the
-    # service ineligible for the free plan. Without a disk the Amazon
-    # session (storage_state.json) is wiped whenever the container
-    # restarts, so 2FA login is needed again after each cold start.
+    # Persistent disk — no longer needed: with TURSO_* set, the Amazon
+    # session (storage_state.json) is restored from Turso after every
+    # restart/redeploy, so the free plan works without re-doing 2FA.
     #
-    # To enable: set "plan" above to "starter", uncomment the disk block
-    # below, and add these env vars under "envVars" so data is written
-    # onto /var/data:
+    # Attach a disk only if you prefer file-based persistence instead of
+    # Turso (paid plans only). Then also set:
     #   - key: STORAGE_STATE_PATH
     #     value: /var/data/storage_state.json
+    #   - key: K2N_LOCAL_DB_PATH
+    #     value: /var/data/local_store.db
     #
     # disk:
     #   name: kindle2notion-data
