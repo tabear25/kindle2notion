@@ -14,6 +14,7 @@ from scripts.add_manual_highlights import (
     summarize_plan,
     write_notes,
 )
+from storage import get_store_or_none
 from web.pipeline import PipelineState, run_pipeline
 
 
@@ -144,6 +145,18 @@ def create_app():
     def api_status():
         """Fallback polling endpoint."""
         return jsonify({"status": state.status})
+
+    @app.route("/api/runs")
+    def api_runs():
+        """Recent sync history from the operational store (best-effort)."""
+        store = get_store_or_none()
+        if store is None:
+            return jsonify({"available": False, "runs": []})
+        try:
+            runs = store.list_runs(limit=20)
+        except Exception as exc:
+            return jsonify({"available": False, "runs": [], "error": str(exc)})
+        return jsonify({"available": True, "runs": runs})
 
     # ------------------------------------------------------------------
     # Manual (non-Kindle) highlights — phone / assistant friendly API

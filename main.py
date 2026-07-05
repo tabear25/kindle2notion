@@ -157,6 +157,10 @@ if __name__ == "__main__":
     window = gui.ProgressWindow(total_books=max_books)
 
     def _worker():
+        from book_transformer import transformer as _transformer
+        from run_history import record_run_end, record_run_start, run_stats
+
+        store, run_id = record_run_start("gui")
         try:
             with sync_playwright() as p:
                 notes = run(
@@ -165,25 +169,34 @@ if __name__ == "__main__":
                     progress_callback=window.update,
                     two_factor_callback=window.prompt_two_factor_code,
                 )
-            toNotion.save_notes_to_notion(
+            notion_summary = toNotion.save_notes_to_notion(
                 NOTION_API_KEY, NOTION_DATABASE_ID, notes,
                 progress_callback=window.update,
             )
             print("Saved notes to Notion.")
+            sheets_summary = None
             if GOOGLE_SHEETS_ENABLED:
                 from google_sheets import toSheets
 
-                toSheets.save_notes_to_google_sheets(
+                sheets_summary = toSheets.save_notes_to_google_sheets(
                     GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
                     GOOGLE_SHEETS_SPREADSHEET_ID,
                     notes,
                     progress_callback=window.update,
                 )
                 print("Saved notes to Google Sheets.")
+            record_run_end(
+                store, run_id, status="done",
+                **run_stats(notes, notion_summary, sheets_summary),
+            )
             window.mark_done()
         except KeyboardInterrupt:
             raise
         except BaseException as e:
+            record_run_end(
+                store, run_id, status="error", error=str(e),
+                scrape_mode=_transformer.last_scrape_mode,
+            )
             window.mark_error(str(e))
 
     thread = threading.Thread(target=_worker, daemon=True)
