@@ -176,15 +176,21 @@ if __name__ == "__main__":
             print("Saved notes to Notion.")
             sheets_summary = None
             if GOOGLE_SHEETS_ENABLED:
-                from google_sheets import toSheets
+                from scripts import split_per_book
 
-                sheets_summary = toSheets.save_notes_to_google_sheets(
-                    GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
-                    GOOGLE_SHEETS_SPREADSHEET_ID,
-                    notes,
-                    progress_callback=window.update,
+                sheets_summary = split_per_book.sync_notes_to_notebooklm(
+                    notes, apply=True, progress_callback=window.update,
                 )
-                print("Saved notes to Google Sheets.")
+                print(
+                    "Synced notes to NotebookLM volumes: "
+                    f"+{sheets_summary['new_highlights']} highlights, "
+                    f"+{sheets_summary['new_books']} books."
+                )
+                if sheets_summary["missing_files"]:
+                    print(
+                        "  [warning] missing NotebookLM file(s) (NOT written): "
+                        + ", ".join(sheets_summary["missing_files"])
+                    )
             record_run_end(
                 store, run_id, status="done",
                 **run_stats(notes, notion_summary, sheets_summary),

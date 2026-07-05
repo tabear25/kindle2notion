@@ -44,10 +44,14 @@ services:
       # Leave blank if you only use the Render-served UI (same origin).
       - key: CORS_ALLOWED_ORIGINS
         sync: false
-      # --- Optional: Google Sheets export (leave blank to disable) ----
+      # --- Optional: Google Sheets / NotebookLM sync (leave blank to disable) ----
       - key: GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE
         sync: false
       - key: GOOGLE_SHEETS_SPREADSHEET_ID
+        sync: false
+      # Drive folder ID hosting the notebooklm/ 50-file set. Required for the
+      # sync to locate the files (the 01_books/02_highlights master is retired).
+      - key: NOTEBOOKLM_PARENT_FOLDER_ID
         sync: false
       # --- Runtime ----------------------------------------------------
       - key: PYTHONUNBUFFERED

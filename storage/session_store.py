@@ -11,8 +11,11 @@ today's behavior (a fresh Amazon login).
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+SNAPSHOT_RETRY_WAIT_SECONDS = 3
 
 
 def _parse_iso(value):
@@ -66,10 +69,29 @@ def hydrate_session_file(store, path) -> bool:
 
 
 def persist_session_file(context, store, path) -> None:
-    """Save ``context.storage_state`` to ``path`` and mirror it to the store."""
+    """Save ``context.storage_state`` to ``path`` and mirror it to the store.
+
+    Snapshotting is best-effort: ``context.storage_state()`` can time out
+    while a heavy page (e.g. the freshly logged-in Amazon notebook) is still
+    executing scripts. Persistence being a convenience, a failed snapshot
+    must never abort the sync — retry once after a settle, then skip with a
+    warning (the next persist point or run will try again).
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    context.storage_state(path=str(path))
+    try:
+        context.storage_state(path=str(path))
+    except Exception as exc:
+        print(f"Warning: session snapshot failed ({exc}); retrying once...")
+        time.sleep(SNAPSHOT_RETRY_WAIT_SECONDS)
+        try:
+            context.storage_state(path=str(path))
+        except Exception as retry_exc:
+            print(
+                "Warning: session snapshot failed again "
+                f"({retry_exc}); continuing without saving the session."
+            )
+            return
 
     if store is None or not store.supports_session:
         return

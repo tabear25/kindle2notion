@@ -1,5 +1,11 @@
 """One-shot migration: legacy ``Sheet1`` -> v2 ``01_books`` / ``02_highlights``.
 
+.. deprecated::
+    This writes the **retired** ``01_books`` / ``02_highlights`` master. The live
+    source of truth is now the NotebookLM 50-file layout (see
+    ``scripts.split_per_book``). This one-shot v1->v2 migration has already run
+    and is kept only for historical reference; do not use it on the live data.
+
 Usage::
 
     python -m scripts.migrate_legacy_sheet                 # dry-run
