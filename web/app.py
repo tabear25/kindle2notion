@@ -3,9 +3,9 @@ import os
 import threading
 import time
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, request, send_from_directory
 
-from config import load_env_file
+from config import BASE_DIR, load_env_file
 from scripts.add_manual_highlights import (
     DEFAULT_MATCH_CUTOFF,
     SheetsNotConfigured,
@@ -33,9 +33,18 @@ def _parse_max_books(value):
     return parsed
 
 
+# The UI lives in frontend/ — one static codebase served both by this Flask
+# app (same origin) and by Vercel (cross origin against the deployed API).
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+
 def create_app():
     load_env_file()
-    app = Flask(__name__)
+    app = Flask(
+        __name__,
+        static_folder=str(FRONTEND_DIR / "static"),
+        static_url_path="/static",
+    )
 
     # ------------------------------------------------------------------
     # Shared state (single-user tool — one pipeline at a time)
@@ -71,7 +80,7 @@ def create_app():
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return send_from_directory(str(FRONTEND_DIR), "index.html")
 
     @app.route("/healthz")
     def healthz():
