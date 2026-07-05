@@ -15,7 +15,10 @@ from scripts.add_manual_highlights import (
     write_notes,
 )
 from storage import get_store_or_none
+from web.cors import init_cors
 from web.pipeline import PipelineState, run_pipeline
+
+SSE_PING_INTERVAL_SECONDS = 15
 
 
 def _parse_max_books(value):
@@ -61,6 +64,10 @@ def create_app():
 
     @app.before_request
     def _check_auth():
+        if request.method == "OPTIONS":
+            # CORS preflights never carry Authorization; web/cors.py answers
+            # them (or Flask's default OPTIONS response does).
+            return None
         if request.path == "/healthz":
             return None
         if not auth_enabled:
@@ -133,17 +140,26 @@ def create_app():
 
     @app.route("/api/events")
     def api_events():
-        """Server-Sent Events stream for real-time progress."""
+        """Server-Sent Events stream for real-time progress.
+
+        Comment pings keep the stream alive through proxy idle timeouts
+        during long quiet stretches (e.g. the up-to-5-minute 2FA wait).
+        """
         def generate():
             last_index = 0
+            last_sent = time.time()
             while True:
                 events, new_index = state.get_events_since(last_index)
                 last_index = new_index
                 for event in events:
                     payload = json.dumps(event["data"], ensure_ascii=False)
                     yield f"event: {event['type']}\ndata: {payload}\n\n"
+                    last_sent = time.time()
                 if state.status in ("done", "error"):
                     break
+                if time.time() - last_sent >= SSE_PING_INTERVAL_SECONDS:
+                    yield ": ping\n\n"
+                    last_sent = time.time()
                 time.sleep(0.3)
 
         return Response(generate(), mimetype="text/event-stream",
@@ -279,4 +295,5 @@ def create_app():
             "ok": not result["problems"],
         })
 
+    init_cors(app)
     return app

@@ -348,3 +348,24 @@ textarea:focus { border-color: var(--accent); }
   body { padding: 32px; align-items: center; }
   h1 { font-size: 1.5rem; }
 }
+
+/* Connection settings (backend on another origin, e.g. Vercel -> Render) */
+.settings {
+  margin-top: 24px;
+  border-top: 1px solid rgba(100, 116, 139, 0.25);
+  padding-top: 12px;
+}
+
+.settings summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.settings label {
+  margin-top: 12px;
+}
+
+.settings .btn-secondary {
+  margin-top: 12px;
+}

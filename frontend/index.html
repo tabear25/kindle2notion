@@ -16,11 +16,29 @@
           <p class="subtitle">Kindle のハイライトを Notion と Google Sheets に保存します。</p>
         </div>
         <div class="card-body">
+          <div id="backend-banner" class="result-box hidden"></div>
           <label for="max-books">取得する書籍数</label>
           <input id="max-books" type="number" min="1" placeholder="空欄ですべて取得" inputmode="numeric">
           <p class="helper">空欄のまま開始すると、表示されているすべての書籍を対象に処理します。</p>
+          <label class="checkbox-row">
+            <input id="full-resync" type="checkbox">
+            <span>Notion キャッシュを全再同期してから実行する</span>
+          </label>
+          <p class="helper">Notion 側でページを手動削除して復活させたいときにオンにします（処理は少し遅くなります）。</p>
           <button id="btn-start" class="btn-primary">同期を開始</button>
           <button id="btn-go-manual" class="btn-secondary">紙の本のハイライトを手動で追加</button>
+
+          <details id="connection-settings" class="settings">
+            <summary>接続設定（別サーバーのバックエンドを使う場合）</summary>
+            <label for="api-base">バックエンド URL</label>
+            <input id="api-base" type="url" placeholder="https://xxxx.onrender.com（空欄 = このページと同じサーバー）" autocomplete="off">
+            <label for="api-user">Basic 認証ユーザー名</label>
+            <input id="api-user" type="text" autocomplete="username">
+            <label for="api-pass">Basic 認証パスワード</label>
+            <input id="api-pass" type="password" autocomplete="current-password">
+            <button id="btn-save-settings" class="btn-secondary">接続設定を保存</button>
+            <p class="helper" id="settings-status"></p>
+          </details>
         </div>
       </div>
     </div>
