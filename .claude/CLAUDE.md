@@ -14,17 +14,24 @@ The application uses Playwright for browser automation, the official Notion Pyth
 kindle2notion/
 ├── main.py                         # Application entry point and orchestrator (GUI mode)
 ├── web_main.py                     # Entry point for Flask web server
-├── note_utils.py                   # Shared helpers: legacy dedup keys + v2 ID/row builders
+├── note_utils.py                   # Shared helpers: legacy dedup keys + note_key_hash + v2 ID/row builders
+├── run_history.py                  # Best-effort run history recording (shared by GUI + web)
+├── gunicorn.conf.py                # Production server config (Docker/Render; 1 gthread worker)
 ├── __init__.py                     # Package marker
 ├── amazon/
 │   ├── __init__.py
-│   └── login.py                    # Amazon authentication via Playwright
+│   └── login.py                    # Amazon authentication via Playwright (selector races, is_session_valid)
 ├── book_transformer/
 │   ├── __init__.py
-│   └── transformer.py              # Kindle highlight extraction logic
+│   └── transformer.py              # Highlight extraction: XHR mode (default) + DOM fallback
 ├── config/
 │   ├── __init__.py                 # BASE_DIR, CONFIG_DIR, load_env_file()
 │   └── KEYS.env                    # Credentials file (git-ignored, must be created manually)
+├── frontend/                       # The web UI (one codebase: served by Flask AND deployed to Vercel)
+│   ├── index.html
+│   └── static/
+│       ├── app.js                  # apiFetch/fetchSSE, 接続設定 panel, manual-entry flows
+│       └── style.css
 ├── google_sheets/
 │   ├── __init__.py
 │   └── toSheets.py                 # Google Sheets export (v2 multi-sheet schema)
@@ -33,20 +40,36 @@ kindle2notion/
 │   └── gui.py                      # Tkinter GUI dialogs + ProgressWindow
 ├── notion/
 │   ├── __init__.py
+│   ├── dedup_cache.py              # Notion dedup key cache (seed / load / append / dirty-reseed)
 │   └── toNotion.py                 # Notion database export module
 ├── scripts/
 │   ├── __init__.py
 │   ├── add_manual_highlights.py    # Add non-Kindle / physical book highlights to Notion + Sheets
 │   ├── migrate_legacy_sheet.py     # One-shot migration: legacy Sheet1 -> v2 schema
+│   ├── resync_notion_cache.py      # Rebuild the Notion dedup cache from the live database
 │   └── split_per_book.py           # Split master into 49 volume Sheets + 1 index for NotebookLM
+├── storage/                        # Operational store (Turso in prod, local SQLite fallback)
+│   ├── __init__.py                 # get_store()/get_store_or_none() factory + schema bootstrap
+│   ├── base.py                     # AppStore ops (session/dedup/runs) + DDL
+│   ├── local.py                    # stdlib sqlite3 backend (connection per call)
+│   ├── session_store.py            # storage_state.json <-> store mirroring (newer-wins hydrate)
+│   └── turso.py                    # Turso libsql HTTP v2 pipeline backend (requests, no native deps)
 ├── web/
 │   ├── __init__.py
-│   ├── app.py                      # Flask application factory (routes, SSE, Basic auth)
+│   ├── app.py                      # Flask application factory (routes, SSE, Basic auth, frontend serving)
+│   ├── cors.py                     # Allowlist CORS for the cross-origin (Vercel) frontend
 │   └── pipeline.py                 # PipelineState + run_pipeline for the web worker thread
 ├── requirements/
 │   └── requirements.txt            # Python package dependencies
-└── test/
+└── test/                           # git-ignored, local-only
+    ├── compare_scrape_modes.py     # manual xhr-vs-dom diff against the real account (not collected)
     ├── test_note_utils.py          # pytest tests for note_utils (legacy + v2 helpers)
+    ├── test_storage.py             # AppStore + SQLite/Turso backends
+    ├── test_session_store.py       # session hydrate/persist
+    ├── test_main_run.py            # main.run() control flow (fast path / web / GUI)
+    ├── test_transformer.py         # XHR mode, pagination, fallback, DOM waits
+    ├── test_to_notion.py           # dedup cache integration
+    ├── test_web_app.py             # routes, CORS, SSE pings, run history recording
     ├── test_split_per_book.py      # pytest tests for scripts/split_per_book.py pure helpers
     └── test_amazon/
         └── test_login.py           # pytest tests for amazon/login.py
@@ -94,7 +117,19 @@ WEB_PASSWORD=
 # Optional — web server bind address/port (defaults: 0.0.0.0 / 5000)
 WEB_HOST=127.0.0.1
 WEB_PORT=5000
+
+# Optional — Turso operational store (session persistence + Notion dedup
+# cache + run history). Unset -> local SQLite fallback (local_store.db),
+# and the Amazon session stays file-only like before.
+TURSO_DATABASE_URL=
+TURSO_AUTH_TOKEN=
 ```
+
+Tuning env vars (all optional): `SCRAPE_MODE` (`xhr` default | `dom` forces the
+legacy click walk), `NOTION_DEDUP_MODE` (`cache` default | `scan` restores the
+per-run full Notion scan), `K2N_LOCAL_DB_PATH` (SQLite fallback path),
+`CORS_ALLOWED_ORIGINS` (comma-separated exact origins for the Vercel frontend;
+unset = no CORS headers), `GUNICORN_THREADS` (prod server threads, default 8).
  
 `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` can be either a file path or a raw JSON string starting with `{`.
 `GOOGLE_SHEETS_WORKSHEET_NAME` is no longer read; worksheet names are fixed by the v2 schema (`01_books` / `02_highlights`).
@@ -115,20 +150,38 @@ Starts a Flask server on port 5000 (default). Progress is streamed to the browse
  
 Both modes share the same pipeline:
 1. Enter the number of books to process (or leave blank for all)
-2. Non-headless Chromium opens for Amazon login; 2FA handled if prompted
-3. Browser session saved to `storage_state.json`
-4. Headless browser scrapes highlights
-5. Saves to Notion (always) and Google Sheets (if configured)
+2. **Fast path**: the saved session (`storage_state.json`, hydrated from Turso when
+   configured) is validated headlessly; if it still reaches the notebook, scraping
+   starts immediately — no login, no 2FA, no visible browser
+3. Only when the session is missing/stale: Amazon login (GUI = visible browser
+   with 2FA dialog / manual auth; web = headless with 2FA relayed over SSE),
+   then the session is saved to `storage_state.json` and mirrored to Turso
+4. Highlights are scraped (XHR mode by default; DOM click-walk as fallback)
+5. Saves to Notion (dedup via the cached key set) and Google Sheets (if configured)
  
 ## Running Tests
  
 ```bash
-pytest test/
+py -3 -m pytest test/ --basetemp=.pytest_tmp
 ```
  
-Tests use pytest with monkeypatching. There is no separate test runner script. The test directory is git-ignored, so tests exist only locally.
+Tests use pytest with monkeypatching. There is no separate test runner script. The test directory is git-ignored, so tests exist only locally. On this Windows machine the `--basetemp` flag is required (the default temp dir is permission-denied). Some tests in `test_split_per_book.py` / `test_add_manual_highlights.py` are skip-guarded because they target an incremental-NotebookLM-merge API that only exists on an unmerged branch (commit `f056383`).
  
 ## Application Flow
+ 
+**`main.run()` (shared by both entry points):**
+```
+run(playwright, max_books, progress_callback, two_factor_callback, headless_login)
+  └── load_config(); store = get_store_or_none()
+  └── hydrate_session_file(store, STORAGE_STATE_PATH)   # Turso -> file, newer-wins
+  └── headless browser + saved storage_state
+        ├── is_session_valid()  ── True ──▶ extract_notes() -> persist session -> return
+        └── False/missing:
+              ├── headless_login=True (web): perform_login() in a fresh context of the
+              │     SAME browser -> persist session -> extract_notes() in that context
+              └── headless_login=False (GUI): visible login browser (2FA dialog /
+                    manual auth) -> persist session -> fresh headless browser scrapes
+```
  
 **GUI mode (`python main.py`):**
 ```
@@ -137,26 +190,28 @@ main.py __main__
   └── prompt_book_limit()           # Tkinter: ask how many books to process
   └── ProgressWindow.run()          # Tkinter main loop (blocks until done/error)
         worker thread:
-          └── run(playwright, max_books, progress_callback, two_factor_callback)
-                ├── perform_login()           # Non-headless: login, handle 2FA
-                ├── context.storage_state()   # Save session to storage_state.json
-                └── extract_notes()           # Headless: scrape highlights
+          └── record_run_start("gui")
+          └── run(playwright, ...)             # see shared flow above
           └── toNotion.save_notes_to_notion()
           └── toSheets.save_notes_to_google_sheets()  # Only if GOOGLE_SHEETS_ENABLED
+          └── record_run_end(...)
 ```
  
-**Web mode (`python web_main.py`):**
+**Web mode (`python web_main.py` locally; gunicorn in Docker/Render):**
 ```
 web_main.py
-  └── create_app()                  # Flask factory: load config, register routes
-        /api/start  POST            # Spawns worker thread, returns immediately
+  └── create_app()                  # Flask factory: load config, register routes, init_cors
+        /api/start  POST            # Body: {max_books?, full_resync?}; spawns worker thread
           worker thread:
-            └── run_pipeline(state, max_books)
+            └── run_pipeline(state, max_books, full_resync)
+                  └── record_run_start("web")
                   └── main.run()   # headless_login=True
-                  └── toNotion.save_notes_to_notion()
+                  └── toNotion.save_notes_to_notion(force_resync=full_resync)
                   └── toSheets.save_notes_to_google_sheets()
+                  └── record_run_end(...)
         /api/2fa    POST            # Unblocks the waiting Playwright thread
-        /api/events GET (SSE)       # Streams progress events to browser
+        /api/events GET (SSE)       # Streams progress; ': ping' comment every 15s
+        /api/runs   GET             # Last 20 runs from the operational store
 ```
  
 ## Core Data Structure
@@ -185,30 +240,73 @@ All modules pass highlights around as a list of dictionaries:
  
 ### `main.py`
 - `load_config()`: idempotent loader; reads env vars into module-level globals, validates required keys, resolves service account path
-- `run(playwright, max_books, progress_callback, two_factor_callback, headless_login)`: performs login in a separate browser context, then scrapes highlights headless; returns list of note dicts
-- GUI `__main__` block: creates `ProgressWindow`, spawns a worker thread for the pipeline, calls `window.run()` (Tkinter main loop)
+- `run(playwright, max_books, progress_callback, two_factor_callback, headless_login)`: session-validation-first (see Application Flow). Fast path = one headless browser, no login. Web login shares that browser; GUI login opens a visible browser. Persists the session (file + Turso) after login and after each scrape
+- GUI `__main__` block: creates `ProgressWindow`, spawns a worker thread for the pipeline (with run-history recording), calls `window.run()` (Tkinter main loop)
 - `GOOGLE_SHEETS_WORKSHEET_NAME` is no longer read; the v2 schema uses fixed sheet names
  
 ### `amazon/login.py`
 - `perform_login(page, email, password, two_factor_callback=None, allow_manual_auth=False)`
 - Navigates to `https://read.amazon.co.jp/notebook`, fills email/password, submits
-- 2FA retry loop: up to `MAX_2FA_ATTEMPTS = 5`; calls `two_factor_callback(error_message=...)` to get code; re-prompts with error if Amazon rejects
+- Instead of blind fixed-timeout waits, `_wait_for_first_visible()` races the possible
+  next states (`[password, 2FA, notebook]`): an already-authenticated or no-2FA login
+  proceeds the moment its next state renders (the old code burned up to 15s+15s)
+- `is_session_valid(page)`: probe used by `main.run()`'s fast path — goto notebook and
+  race `[notebook, email, password]`; only a visible library counts as valid
+- 2FA retry loop: up to `MAX_2FA_ATTEMPTS = 5`; calls `two_factor_callback(error_message=...)`;
+  acceptance is detected by `_wait_until_hidden()` on the OTP input
 - If `two_factor_callback` is `None`, falls back to the standalone `gui_utils.gui.prompt_two_factor_code()`
 - If `allow_manual_auth=True` and no callback, calls `_wait_for_notebook_ready()` to poll for manual completion in the open browser
 - `_wait_for_notebook_ready()` polls every 0.5s until notebook URL + selector visible, up to `NOTEBOOK_WAIT_TIMEOUT = 180000` ms
 - Raises `SystemExit` for user cancellation; raises `TimeoutError` if notebook page never loads
+- All helpers use only `query_selector` / `is_visible` / `wait_for_timeout` / `url` — the exact surface `test_login.py`'s FakePage implements
  
 ### `book_transformer/transformer.py`
-- Iterates `.kp-notebook-library-each-book` elements
-- Clicks each book and waits 5 seconds (`time.sleep(5)`) for content to load
+Two scrape modes behind the unchanged `extract_notes(page, max_books, progress_callback)`;
+both emit notes through the shared `_extract_current_book()` so the dicts are identical.
+- **XHR mode (default)**: enumerate sidebar ASINs (`.kp-notebook-library-each-book` id attr),
+  `page.request.get()` each book's annotation fragment (`/notebook?asin=...&contentLimitState=...`),
+  render it with `page.set_content()` and reuse the DOM selectors; follows the hidden
+  pagination inputs (`.kp-notebook-annotations-next-page-start` / `.kp-notebook-content-limit-state`)
+  so large books are complete (DOM mode only sees the initially rendered chunk)
+- **DOM mode**: legacy click walk, now waiting on the clicked ASIN's XHR response
+  (`page.expect_response`, 10s) + 200ms settle instead of the old fixed 1.5s pause
+  (the fixed pause remains as the per-click safety net)
+- Any XHR-mode failure (missing ASIN, non-200, missing `h3`, runaway pagination) prints a
+  warning and reruns the whole scrape in DOM mode; `SCRAPE_MODE=dom` forces DOM outright
+- `last_scrape_mode` records what actually ran (`xhr` / `dom` / `dom-fallback`) for run history
 - Extracts title from `h3`, highlights from `#highlight`, page numbers from `#annotationHighlightHeader` via regex
-- Returns a list of note dicts
  
-### `notion/toNotion.py`
-- `get_existing_note_keys()`: paginates through all Notion DB entries (100/page) to build a set of `(title, content, page)` tuples
-- `save_notes_to_notion()`: skips notes already in Notion (dedup key = `(title, content, page)`), creates pages with `Title`, `Content`, `Page` properties
+### `notion/toNotion.py` + `notion/dedup_cache.py`
+- `save_notes_to_notion(..., force_resync=False)`: dedup keys come from the operational
+  store's cache when available (`dedup_cache.load_dedup_hashes` — one query), falling back
+  to the legacy full scan when the store/cache is off. Creates pages with `Title`, `Content`, `Page`
+- The cache is seeded once via `fetch_existing_note_keys_strict()` (raises on API errors so a
+  partial fetch can never poison the cache); `get_existing_note_keys()` stays the lenient
+  variant (returns what it could collect). Hashes (`note_utils.note_key_hash`) are stored,
+  not raw text; new-page hashes are appended in flushed batches (`DEDUP_FLUSH_EVERY = 100`)
+- Any cache-append failure marks the cache dirty -> next load reseeds from Notion. Failure
+  direction is always "extra full scan", never "duplicate page"
+- **Documented behavior change**: pages deleted by hand in Notion stay deleted on later syncs.
+  `scripts/resync_notion_cache.py` or `/api/start {"full_resync": true}` rebuilds the cache
+  (old semantics on demand). `NOTION_DEDUP_MODE=scan` disables caching entirely
 - Accepts optional `progress_callback(phase, current, total, message)` for both GUI and web progress reporting
 - Uses `note_utils.build_note_key` / `build_note_key_from_note` for the dedup key
+ 
+### `storage/` (operational store)
+- `get_store()` / `get_store_or_none()`: Turso when `TURSO_DATABASE_URL`+`TURSO_AUTH_TOKEN`
+  are set, else local SQLite at `K2N_LOCAL_DB_PATH` (default `local_store.db`). Schema
+  (`app_session`, `notion_dedup_key`, `notion_dedup_meta`, `run_history`) is created on first use
+- `turso.py` speaks the libsql **HTTP v2 pipeline** with plain `requests` (no native wheels —
+  works on the Windows dev box); batched INSERTs, 10s timeout, 2 retries on 5xx/connection errors
+- `local.py` opens a connection per call (Flask threads + worker thread safe)
+- `session_store.py`: `hydrate_session_file()` (store -> file, newer-wins by timestamp) and
+  `persist_session_file()` (file + store). Local mode is file-only (`supports_session=False`)
+- Everything is best-effort by contract: callers wrap store usage and degrade (session -> file,
+  dedup -> full scan, history -> skip). A broken store must never fail a sync run
+ 
+### `run_history.py`
+- `record_run_start(mode)` / `record_run_end(store, run_id, **fields)` / `run_stats(notes, ...)` —
+  shared by the GUI worker and `web/pipeline.py`; lives at top level to avoid import cycles
  
 ### `google_sheets/toSheets.py`
 Implements the **v2 multi-sheet schema**. Writes to two fixed worksheets; never touches other sheets in the same spreadsheet.
@@ -249,14 +347,15 @@ Contains two groups of helpers:
 - `note_to_book_row()` / `note_to_highlight_row()`: shape a note dict into a row list
  
 ### `web/app.py`
-- `create_app()`: Flask application factory; calls `load_env_file()`, registers routes, sets up Basic auth if `WEB_USERNAME`/`WEB_PASSWORD` are set
-- Routes: `GET /` (index), `POST /api/start`, `POST /api/2fa`, `GET /api/events` (SSE), `GET /api/status`
+- `create_app()`: Flask application factory; calls `load_env_file()`, registers routes, sets up Basic auth if `WEB_USERNAME`/`WEB_PASSWORD` are set, serves the UI from `frontend/` (`send_from_directory`; static folder = `frontend/static`), and calls `web.cors.init_cors(app)`
+- Routes: `GET /` (index), `POST /api/start` (body: `max_books?`, `full_resync?`), `POST /api/2fa`, `GET /api/events` (SSE), `GET /api/status`, `GET /api/runs` (last 20 runs)
+- Basic auth **skips `OPTIONS`** (CORS preflights never carry Authorization); `web/cors.py` answers allowlisted preflights (`CORS_ALLOWED_ORIGINS`, exact-match, unset = no CORS at all)
 - **Manual highlights API** (phone / assistant friendly; mirrors `scripts/add_manual_highlights.py` so the *same* flow works from a phone against the deployed service):
   - `GET /api/manual/books` — read-only fuzzy title match ("この本ですか？"). Query: `title` (rank against existing books; omit to list all), `cutoff` (0..1), `full=1` (also include the whole book list). Reuses `build_books_result()`. Returns `sheets_configured: false` (HTTP 200) when Sheets is off so the caller can fall back.
   - `POST /api/manual/highlights` — add highlights. Body = the CLI JSON payload (`{title, highlights}` or `{books:[...]}`) plus control keys `apply` (default `false` = dry-run), `notion_only`/`sheets_only`. Reuses `build_notes_from_payload()` + `write_notes()`. Always HTTP 200 with an `ok` flag + `problems` list — a partial write failure is `ok: false`, **not** an HTTP error, so callers must check `ok`. Bad payload → 400.
   - These endpoints are independent of the Kindle pipeline, so they do **not** take `run_lock`; both writers are dedup-safe. They are covered by Basic auth like every other route. Tested in `test/test_web_manual.py` (Flask test client; network helpers monkeypatched, the `apply=false` dry-run path tested for real).
 - Uses a `threading.Lock` to prevent concurrent pipeline runs
-- SSE stream polls `PipelineState.get_events_since()` every 0.3s and closes when status is `done` or `error`
+- SSE stream polls `PipelineState.get_events_since()` every 0.3s, emits a `: ping` comment after 15 quiet seconds (`SSE_PING_INTERVAL_SECONDS` — keeps proxies from idle-closing during the 2FA wait), and closes when status is `done` or `error`. Every new connection replays from index 0, so client reconnects are lossless
  
 ### `web/pipeline.py`
 - `PipelineState`: shared mutable state between Flask routes and the worker thread
@@ -265,12 +364,17 @@ Contains two groups of helpers:
   - `request_two_factor(error_message)`: called from Playwright thread; blocks on `threading.Event` (5 min timeout)
   - `submit_two_factor(code)`: called from Flask route; unblocks the Playwright thread
   - `progress_callback(phase, current, total, message)`: drop-in replacement for `ProgressWindow.update`
-- `run_pipeline(state, max_books)`: executes the full pipeline in a background thread; pushes SSE events; sets `state.status`
+- `run_pipeline(state, max_books, full_resync=False)`: executes the full pipeline in a background thread; pushes SSE events; sets `state.status`; records run history via `run_history.py`; passes `force_resync` to the Notion writer
  
 ### `web_main.py`
-- Creates the Flask app via `create_app()` and starts it with `app.run()`
+- Creates the Flask app via `create_app()`; `python web_main.py` runs the dev server (local / VPS), while Docker/Render runs `gunicorn -c gunicorn.conf.py web_main:app`
 - Reads `WEB_HOST` (default `0.0.0.0`) and `WEB_PORT` (default `5000`) from env
 - Prints local + LAN access URLs on startup
+ 
+### `frontend/static/app.js`
+- `apiFetch(path, opts)`: prefixes the saved backend URL and adds a Basic `Authorization` header when the 接続設定 panel is configured (localStorage keys `k2n_api_base` / `k2n_api_user` / `k2n_api_pass`); same-origin use sends no explicit header (browser-native Basic auth, unchanged)
+- SSE is read via **fetch + ReadableStream** (`connectSSE`/`openEventStream`/`handleSSEFrame`) — EventSource cannot send Authorization headers. Abnormal stream end retries after 2s; the server's replay-from-zero makes that lossless
+- Start screen extras: `full_resync` checkbox (one-shot, auto-unchecks), backend wake-up banner polling `/healthz` every 5s while a sleeping Render instance spins up
  
 ### `scripts/migrate_legacy_sheet.py`
 - One-shot migration from the legacy `Sheet1` (v1 flat schema) to `01_books` / `02_highlights`
@@ -390,37 +494,43 @@ Invariants:
  
 To migrate from a legacy `Sheet1` to v2, run `scripts/migrate_legacy_sheet.py`.
  
-## Render Deployment (Docker)
+## Deployment (Render + Vercel + Turso)
  
-The Flask web UI can be deployed to Render as a Docker web service. Files:
-- `Dockerfile` — Python 3.12 + Playwright Chromium image; `CMD ["python", "web_main.py"]`
-- `.dockerignore` — keeps secrets/caches/local data out of the build context
+The production topology is: **Vercel** serves `frontend/` statically (always-on entry
+point), **Render** runs the Docker backend (Flask + Playwright), and **Turso** persists
+the operational state. Files:
+- `Dockerfile` — Python 3.12 + Playwright Chromium image; `CMD ["gunicorn", "-c", "gunicorn.conf.py", "web_main:app"]`
+- `gunicorn.conf.py` — **1 gthread worker** (PipelineState / run_lock / SSE buffer are in-process; more workers would shard them), `timeout 0` (SSE streams must never be watchdog-killed), threads via `GUNICORN_THREADS`
+- `.dockerignore` — keeps secrets/caches/local data (incl. `local_store.db`) out of the build context
 - `render.yaml` — Render Blueprint: one web service, `healthCheckPath: /healthz`, secrets as `sync: false`
-- `deploy/render/README.md` — full step-by-step deployment guide
+- `deploy/render/README.md` — backend guide (incl. Turso setup); `deploy/vercel/README.md` — frontend guide
  
 Render-specific behaviour built into the code:
 - `web_main.py` binds `PORT` (Render-injected) first, then `WEB_PORT`, then `5000`
-- `main.py` reads the `STORAGE_STATE_PATH` env var so the Amazon session can live on a mounted disk; the default is unchanged
+- With `TURSO_*` set, the Amazon session survives cold starts/redeploys (hydrated from Turso), so the free plan no longer forces a 2FA re-login; `STORAGE_STATE_PATH` + a paid disk remain as an alternative
 - `main.py` launches Chromium with `--no-sandbox --disable-dev-shm-usage` (`BROWSER_LAUNCH_ARGS`), required to run headless as root in a container
-- `web/app.py` exposes `GET /healthz` (unauthenticated, exempt from Basic auth) for Render health checks
+- `web/app.py` exposes `GET /healthz` (unauthenticated, exempt from Basic auth) for Render health checks and for the frontend's wake-up polling
+- `CORS_ALLOWED_ORIGINS` must contain the Vercel origin for the cross-origin frontend to work
 - Config still comes from env vars: `load_env_file()` is a no-op when `config/KEYS.env` is absent, so Render dashboard env vars are read directly
  
-The free plan has no persistent disk, so `storage_state.json` is lost on every cold start (2FA re-login each time). See `deploy/render/README.md` for the paid-plan disk setup. The VPS path (`deploy/README.md`) is unaffected and still valid.
+The VPS path (`deploy/README.md`) still works (`python web_main.py` under systemd) but the VPS is currently out of service; its GitHub Actions deploy is `workflow_dispatch`-only.
  
 ## Key Files to Ignore
  
 The following are git-ignored and must not be committed:
 - `config/KEYS.env` — credentials
 - `storage_state.json` — browser session (auto-generated)
-- `__pycache__/`, `*.pyc` — Python cache
+- `local_store.db` — local SQLite fallback of the operational store
+- `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.pytest_tmp/` — caches
 - `CODEX_KEY_CONTEXT.md` — Claude session context
  
 ## Testing Notes
  
-- `test/test_amazon/test_login.py`: tests for `amazon/login.py`; uses a `FakePage` mock class and `monkeypatch.setattr` to inject responses
+- `test/test_amazon/test_login.py`: tests for `amazon/login.py`; uses a `FakePage` mock class and `monkeypatch.setattr` to inject responses. The login helpers deliberately use only the FakePage API surface (`query_selector` / `is_visible` / `wait_for_timeout` / `url`)
 - `test/test_note_utils.py`: pure-function tests for `note_utils.py` (legacy helpers + v2 ID/row builders); no network access needed
-- `test/test_split_per_book.py`: pure-function tests for `scripts/split_per_book.py` (filename sanitisation, grouping, row shaping); no network access needed
-- `test/test_add_manual_highlights.py`: pure-function tests for `scripts/add_manual_highlights.py` (payload parsing, note building, plan summary); no network access needed
+- `test/test_storage.py`: AppStore + SQLite backend for real on `tmp_path`; Turso backend against a monkeypatched `requests.post` (pipeline encoding/decoding, retries, batching)
+- `test/test_session_store.py` / `test/test_main_run.py` / `test/test_transformer.py` / `test/test_to_notion.py` / `test/test_web_app.py`: cover the session mirroring, run() control flow, XHR/DOM scraping + fallback, dedup cache semantics, and web routes/CORS/SSE respectively — all offline via fakes
+- `test/compare_scrape_modes.py`: NOT a pytest module — a manual helper that scrapes the real account in both modes and diffs the notes (`py -3 -m test.compare_scrape_modes [max_books]`)
 - The test directory is git-ignored; no CI pipeline exists
 - When modifying `amazon/login.py`, update `test/test_amazon/test_login.py`
 - When modifying `note_utils.py`, update `test/test_note_utils.py`
@@ -429,9 +539,10 @@ The following are git-ignored and must not be committed:
 ## Common Gotchas
  
 - The Amazon notebook URL targets Japan (`read.amazon.co.jp`). Do not change to `.com`.
-- `time.sleep(5)` between book clicks is intentional — the page loads highlights dynamically.
+- XHR mode may legitimately return MORE highlights than DOM mode for large books (DOM only reads the initially rendered chunk); dedup makes the difference safe. If Amazon changes the annotation endpoint, the run falls back to DOM mode automatically — check `run_history.scrape_mode` for `dom-fallback` to spot silent degradation.
 - If `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` starts with `{`, it is treated as a raw JSON string, not a file path.
-- `storage_state.json` is reused on the next run if it already exists (no explicit expiry logic).
+- `storage_state.json` is validated (not blindly trusted) at the start of each run; an invalid session degrades to a normal login. With Turso configured it is also mirrored remotely, newest-wins.
+- The Notion dedup cache means hand-deleted Notion pages stay deleted; `scripts/resync_notion_cache.py` restores scan semantics. Never seed the cache from a lenient (partial) fetch — that is why `fetch_existing_note_keys_strict` exists.
 - The GUI requires a display server (X11/Wayland). Running headlessly in CI will fail unless a virtual display is provided.
 - Service accounts have **0 bytes of personal Drive storage**. They can edit files shared with them and create folders (0 bytes), but they cannot own new files in "My Drive" — Google rejects creation with `storageQuotaExceeded`. Workarounds: (a) Workspace Shared Drive, (b) OAuth user credentials, (c) pre-create files manually. `scripts/split_per_book.py` uses option (c).
 - For files in "My Drive" root that are shared with the service account (not owned), the Drive API may return an empty `parents` field. `scripts/split_per_book.py` handles this via the `--parent-folder` CLI flag or the `NOTEBOOKLM_PARENT_FOLDER_ID` env var.

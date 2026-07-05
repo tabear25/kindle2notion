@@ -12,12 +12,22 @@ Kindle Notebook のハイライトを取得し、Notion データベースへ保
 
 ## 機能
 
-- Kindle ノートブックからハイライトを自動取得（Playwright スクレイピング）
-- Notion データベースへ保存（重複スキップ付き）
+- Kindle ノートブックからハイライトを自動取得
+  - 既定は **XHR 直接取得**（クリック巡回なし。従来比 5〜10 倍高速、うまく動かないときは自動でクリック方式にフォールバック）
+- **Amazon ログインセッションの再利用**: 一度ログインすれば以後の実行はログイン・2FA なしで数秒で取得開始
+- Notion データベースへ保存（重複スキップ付き。重複チェックは **Turso/SQLite キャッシュ** で毎回の全件取得を省略）
 - Google スプレッドシートへ保存（`01_books` / `02_highlights` の v2 スキーマ）
 - 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`）
 - Web UI フォーム・HTTP API・Cloud CLI からスマホや外出先で手動ハイライト追加
 - NotebookLM 用に 49 ボリューム＋索引の固定 50 ファイルへ分割（`split_per_book.py`）
+- 実行履歴の記録（`GET /api/runs`）
+
+### 従来からの挙動変更（重要）
+
+Notion の重複チェックがキャッシュ化されたため、**Notion 側で手動削除したページは次回同期で復活しなくなりました**（従来は復活していました）。復活させたい場合は次のどちらかで「全再同期」してください。
+
+- Web UI: 開始画面の「Notion キャッシュを全再同期してから実行する」にチェック
+- CLI: `py -3 -m scripts.resync_notion_cache`
 
 ## 前提条件
 
@@ -57,7 +67,7 @@ Notion の Integration を作成して API キーを取得してください。
 
 Google Sheets 保存は任意です。使わない場合は設定不要です。
 
-`DOCUMENTS/NOTEBOOKLM_SETUP_TODO.md` に記載されています。
+`docs/NOTEBOOKLM_SETUP_TODO.md` に記載されています。
 
 ### 5. `config/KEYS.env` を設定する
 
@@ -84,7 +94,22 @@ WEB_PASSWORD=
 # Web サーバーのバインドアドレスとポート（省略時: 0.0.0.0 / 5000）
 WEB_HOST=127.0.0.1
 WEB_PORT=5000
+
+# Turso（運用DB）を使う場合のみ設定。未設定ならローカルSQLite
+# (local_store.db) に自動フォールバックし、セッションはファイルのみ。
+TURSO_DATABASE_URL=
+TURSO_AUTH_TOKEN=
 ```
+
+任意のチューニング用環境変数:
+
+| 変数 | 既定値 | 意味 |
+| --- | --- | --- |
+| `SCRAPE_MODE` | `xhr` | `dom` で従来のクリック方式を強制 |
+| `NOTION_DEDUP_MODE` | `cache` | `scan` で毎回 Notion 全件スキャン（従来挙動） |
+| `K2N_LOCAL_DB_PATH` | `local_store.db` | ローカルSQLiteフォールバックの保存先 |
+| `CORS_ALLOWED_ORIGINS` | (無効) | Vercel 等の別オリジンのフロントを許可（カンマ区切り・完全一致） |
+| `GUNICORN_THREADS` | `8` | 本番サーバーのスレッド数（Docker運用時） |
 
 `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` は次のどちらでも使えます。
 
@@ -117,13 +142,13 @@ python main.py
 流れ:
 
 1. 取得する書籍数を入力する
-2. Amazon にログインする
-3. 必要なら、表示された Chromium 側で 2 段階認証コードを入力する
+2. 保存済みセッションが有効ならログインをスキップして即取得開始（2回目以降はこちらが通常）
+3. セッションがない/切れているときだけ Amazon ログイン（必要なら 2 段階認証）
 4. Kindle ハイライトを取得する
 5. Notion に保存する
 6. Google Sheets 設定があれば Sheets にも保存する
 
-GUI 版では、ログイン用ブラウザを表示している間は、Amazon 側の追加認証をブラウザ上でそのまま完了させる想定です。
+GUI 版では、ログインが必要なときだけブラウザが表示され、Amazon 側の追加認証をブラウザ上でそのまま完了させる想定です（セッション有効時はウィンドウは出ません）。
 
 ### Web 版
 
@@ -143,7 +168,7 @@ http://<server-ip>:5000
 
 Kindle 以外の本（紙の本・他ストアの電子書籍）のハイライトを Notion / Google Sheets に追加します。  
 スマホや外出先からも **Web フォーム・HTTP API・Cloud CLI** の 3 経路で使えます。  
-詳細: [`DOCUMENTS/MANUAL_HIGHLIGHTS.md`](DOCUMENTS/MANUAL_HIGHLIGHTS.md)
+詳細: [`docs/MANUAL_HIGHLIGHTS.md`](docs/MANUAL_HIGHLIGHTS.md)
 
 ```bash
 # dry-run
@@ -160,10 +185,18 @@ py -3 -m scripts.add_manual_highlights --title "..." --highlight "..." --apply
 py -3 -m scripts.add_manual_highlights --list-books --title "タイトル"
 ```
 
+### Notion 重複キャッシュの全再同期 (`resync_notion_cache.py`)
+
+重複チェック用キャッシュを Notion の現状から作り直します。Notion 側でページを手動削除して「次の同期で復活させたい」ときに実行してください。
+
+```bash
+py -3 -m scripts.resync_notion_cache
+```
+
 ### NotebookLM 向けボリューム分割 (`split_per_book.py`)
 
 マスタシートの内容を 49 ボリューム＋索引 = 計 50 ファイルへ書き出します。  
-詳細: [`DOCUMENTS/NOTEBOOKLM_SETUP_TODO.md`](DOCUMENTS/NOTEBOOKLM_SETUP_TODO.md)
+詳細: [`docs/NOTEBOOKLM_SETUP_TODO.md`](docs/NOTEBOOKLM_SETUP_TODO.md)
 
 ```bash
 # dry-run
@@ -187,11 +220,14 @@ py -3 -m scripts.migrate_legacy_sheet --apply  # 本番書き込み
 
 ## デプロイ
 
+推奨構成は **Render（バックエンド）+ Vercel（フロント）+ Turso（運用DB）** です。
+
 | 方式 | 用途 | 詳細 |
 |---|---|---|
 | ローカル GUI | 自分の PC で完結 | `python main.py` |
-| VPS (Ubuntu + Caddy) | 外出先からでも使いたい | [`deploy/README.md`](deploy/README.md) |
-| Render (Docker) | サーバーを持ちたくない | [`deploy/render/README.md`](deploy/render/README.md) |
+| Render (Docker) | バックエンド本体。Turso 併用で無料プランでも 2FA 再ログイン不要 | [`deploy/render/README.md`](deploy/render/README.md) |
+| Vercel (静的) | `frontend/` をそのまま配信するスマホ向け UI | [`deploy/vercel/README.md`](deploy/vercel/README.md) |
+| VPS (Ubuntu + Caddy) | 自前サーバー派向け（現在は休止中の旧構成） | [`deploy/README.md`](deploy/README.md) |
 
 ## 動かなかったら
 
