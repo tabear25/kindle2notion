@@ -70,7 +70,8 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 | `TURSO_AUTH_TOKEN` | ⭐ 強く推奨 | Turso の認証トークン |
 | `CORS_ALLOWED_ORIGINS` | Vercel 併用時 | フロントのオリジン（例: `https://kindle2notion.vercel.app`） |
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` | 任意 | サービスアカウント JSON（**文字列そのものを貼り付け**） |
-| `GOOGLE_SHEETS_SPREADSHEET_ID` | 任意 | エクスポート先スプレッドシート ID |
+| `GOOGLE_SHEETS_SPREADSHEET_ID` | 任意 | Sheets 有効化のゲート＋フォルダ解決の予備（旧マスタ ID でも可） |
+| `NOTEBOOKLM_PARENT_FOLDER_ID` | 任意 | NotebookLM 50 ファイルを置いた Drive フォルダ ID。Sheets 同期の主な参照先（旧マスタ廃止後はこれが必須級） |
 | `SCRAPE_MODE` | 任意 | 既定 `xhr`。`dom` で従来のクリック方式を強制 |
 | `STORAGE_STATE_PATH` | 任意 | セッション保存先（永続ディスク利用時のみ設定） |
 

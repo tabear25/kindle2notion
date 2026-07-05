@@ -104,12 +104,11 @@ def run_pipeline(state, max_books, full_resync=False):
 
         sheets_summary = None
         if main.GOOGLE_SHEETS_ENABLED:
-            from google_sheets import toSheets
+            from scripts import split_per_book
 
-            sheets_summary = toSheets.save_notes_to_google_sheets(
-                main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
-                main.GOOGLE_SHEETS_SPREADSHEET_ID,
+            sheets_summary = split_per_book.sync_notes_to_notebooklm(
                 notes,
+                apply=True,
                 progress_callback=state.progress_callback,
             )
 

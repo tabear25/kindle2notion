@@ -11,20 +11,24 @@ Total = 50 files, forever. Each book is pinned to a volume by a stable
 hash of its ``book_id`` (see ``volume_for_book_id``), so re-runs never
 move a book between volumes and the operation is effectively append-only.
 
-It reads the v2 master schema (``01_books`` + ``02_highlights``) and
-writes / refreshes the 50 files inside a ``notebooklm/`` subfolder next
-to the master spreadsheet.
+These 50 files are now the **single source of truth** for highlights. The
+primary write path is :func:`sync_notes_to_notebooklm`, which merges scraped /
+manual notes directly into the volume + index files (called automatically after
+a Kindle scrape from ``main.py`` / ``web/pipeline.py`` and after a manual add
+from ``scripts/add_manual_highlights.py``). The retired ``01_books`` /
+``02_highlights`` master is **no longer written**; it is only read by the
+legacy ``--from-master`` CLI backfill below.
 
-Usage::
+CLI usage::
 
-    python -m scripts.split_per_book                   # dry-run
-    python -m scripts.split_per_book --apply           # actually write
-    python -m scripts.split_per_book --apply --folder notebooklm
+    python -m scripts.split_per_book                   # dry-run: rebuild index from volumes
+    python -m scripts.split_per_book --apply           # rebuild k2n_index from the 49 volumes
+    python -m scripts.split_per_book --from-master --apply  # LEGACY: re-split from the retired master
 
 Writes are paced (and retried on a per-minute 429) so a full 50-file ``--apply``
-completes in one run. If the master's own Drive parent cannot be auto-resolved
-(e.g. it sits in 'My Drive' root or inside a trashed folder), set the
-``NOTEBOOKLM_PARENT_FOLDER_ID`` env var (or pass ``--parent-folder``) so the
+completes in one run. If the destination folder's Drive parent cannot be
+auto-resolved (e.g. it sits in 'My Drive' root or inside a trashed folder), set
+the ``NOTEBOOKLM_PARENT_FOLDER_ID`` env var (or pass ``--parent-folder``) so the
 destination folder is found without it.
 
 Design notes:
@@ -33,8 +37,10 @@ Design notes:
 - No new external API / AI dependency.  Drive API calls go through
   ``google.auth.transport.requests.AuthorizedSession`` which is already a
   transitive dep of ``google-auth``.
-- Idempotent: every volume / index file is rewritten in full from the
-  master.  The master itself is **never** modified.
+- Each volume file is **self-describing** (every row carries ``book_id`` +
+  ``book_title``), so :func:`sync_notes_to_notebooklm` reconstructs a volume's
+  existing state from the volume itself -- never from the lossy index -- when
+  merging in new highlights.
 - Filenames are fixed: ``<prefix>_index`` and ``<prefix>_vol_01`` ..
   ``<prefix>_vol_49``.  Service Accounts cannot create Drive files, so the
   user creates these 50 empty Sheets **once**; new books afterwards need
@@ -59,6 +65,20 @@ from pathlib import Path
 # Make the project root importable when run as ``python scripts/...``.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# ``note_utils`` is pure standard library (no gspread / google-auth), so it
+# imports cleanly even when the heavy runtime deps below are missing. The merge
+# + id helpers depend on it and must stay importable for the unit tests, so it
+# is imported UNCONDITIONALLY (outside the guarded block).
+from note_utils import (  # noqa: E402
+    BOOKS_HEADERS,
+    HIGHLIGHTS_HEADERS,
+    content_dedup_key,
+    highlight_id,
+    normalize_text,
+    stable_book_id,
+    today_iso,
+)
+
 # Heavy runtime imports are guarded so that unit tests can import the pure
 # helpers without needing gspread / google-auth / nest_asyncio installed.
 try:
@@ -66,11 +86,31 @@ try:
     from gspread.exceptions import APIError  # type: ignore
     from google.auth.transport.requests import AuthorizedSession  # type: ignore
     from google.oauth2.service_account import Credentials  # type: ignore
-    from google_sheets.toSheets import BOOKS_SHEET, HIGHLIGHTS_SHEET, SCOPES  # noqa: E402
-    from note_utils import BOOKS_HEADERS, HIGHLIGHTS_HEADERS  # noqa: E402
+    from google_sheets.toSheets import (  # noqa: E402
+        BOOKS_SHEET,
+        HIGHLIGHTS_SHEET,
+        REQUEST_TIMEOUT,
+        SCOPES,
+    )
     _RUNTIME_DEPS_OK = True
 except Exception:  # pragma: no cover -- only hit during test collection
     _RUNTIME_DEPS_OK = False
+
+
+def _authorize_sheets(creds):
+    """gspread client with the shared request timeout.
+
+    Same rationale as toSheets._build_client: a stalled call to Google's API
+    must fail fast instead of freezing the sync (the GUI / web UI would
+    otherwise hang on the "sheets" phase forever). ``set_timeout`` is looked
+    up defensively — older gspread releases (and the in-memory test fakes)
+    don't provide it.
+    """
+    client = gspread.authorize(creds)
+    set_timeout = getattr(client, "set_timeout", None)
+    if set_timeout is not None:
+        set_timeout(REQUEST_TIMEOUT)
+    return client
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 
@@ -236,6 +276,173 @@ def group_highlights_by_book(highlight_rows: list[dict]) -> dict[str, list[dict]
         if not bid:
             continue
         out.setdefault(bid, []).append(row)
+    return out
+
+
+def _strip_header(rows: list[list[str]], headers: list[str]) -> list[list[str]]:
+    """Drop a leading header row if it matches ``headers``; return the body."""
+    body = list(rows or [])
+    if body and list(body[0][: len(headers)]) == headers:
+        body = body[1:]
+    return [r for r in body if any((c or "").strip() for c in r)]
+
+
+def _volume_row_to_highlight(row: list[str]) -> dict:
+    """Inverse of one ``volume_rows`` body row -> a highlight dict.
+
+    Pads short rows and strips whitespace so a round-trip
+    (``volume_rows`` -> parse -> ``volume_rows``) is byte-stable.
+    """
+    padded = (list(row) + [""] * len(VOLUME_HEADERS))[: len(VOLUME_HEADERS)]
+    d = dict(zip(VOLUME_HEADERS, padded))
+    return {key: (d.get(key) or "").strip() for key in VOLUME_HEADERS}
+
+
+def _index_row_to_book(row: list[str]) -> dict:
+    """Inverse of one ``index_rows`` body row -> a book dict."""
+    padded = (list(row) + [""] * len(INDEX_HEADERS))[: len(INDEX_HEADERS)]
+    d = dict(zip(INDEX_HEADERS, padded))
+    return {key: (d.get(key) or "").strip() for key in INDEX_HEADERS}
+
+
+def volumes_for_book_ids(book_ids, volume_count: int = VOLUME_COUNT) -> set:
+    """Return the set of volume indices touched by a collection of book_ids.
+
+    Blank ids are ignored. Two book_ids hashing to the same volume collapse to
+    one entry, so this is the minimal set of volume files a sync must read/write.
+    """
+    return {
+        volume_for_book_id(bid, volume_count)
+        for bid in book_ids
+        if (bid or "").strip()
+    }
+
+
+def merge_notes_into_volume(
+    volume_rows_in: list[list[str]],
+    notes_for_volume: list[dict],
+    *,
+    today: str | None = None,
+):
+    """Merge ``notes_for_volume`` into one volume file's existing rows.
+
+    ``volume_rows_in`` is the volume sheet's ``get_all_values()`` output (header
+    + body, or empty); ``notes_for_volume`` are the note dicts whose book maps to
+    this volume. Returns ``(new_rows, summary, touched_book_ids, book_meta)``:
+
+    - ``new_rows``   -- the full replacement sheet content (header + body),
+      rebuilt via :func:`volume_rows` so it is sorted + byte-stable.
+    - ``summary``    -- the 5 standard counters (same keys as
+      ``toSheets.save_notes_to_google_sheets``).
+    - ``touched``    -- book_ids that gained a highlight or are brand new.
+    - ``book_meta``  -- ``{book_id: {"title", "count"}}`` for every book in the
+      rewritten volume (used to refresh the index without re-reading).
+
+    Pure: no I/O. Because each volume row carries its own ``book_id`` +
+    ``book_title``, existing highlights, titles and per-book ``highlight_id``
+    numbering are reconstructed from the rows themselves -- never from the lossy
+    (truncated/sanitised) index.
+    """
+    today = today or today_iso()
+
+    existing_highlights: list[dict] = []
+    titles: dict[str, str] = {}
+    for raw in _strip_header(volume_rows_in, VOLUME_HEADERS):
+        hl = _volume_row_to_highlight(raw)
+        bid = hl["book_id"]
+        if not bid:
+            continue
+        existing_highlights.append(hl)
+        if hl["book_title"] and bid not in titles:
+            titles[bid] = hl["book_title"]
+
+    dedup: set = set()
+    max_idx: dict[str, int] = {}
+    for hl in existing_highlights:
+        bid = hl["book_id"]
+        content = hl["content"]
+        if bid and content:
+            dedup.add(content_dedup_key(bid, content))
+        hid = hl["highlight_id"]
+        if hid.startswith("HL-") and "-" in hid[3:]:
+            tail = hid.rsplit("-", 1)[-1]
+            if tail.isdigit() and int(tail) > max_idx.get(bid, 0):
+                max_idx[bid] = int(tail)
+
+    new_books = 0
+    new_highlights = 0
+    skipped_duplicates = 0
+    skipped_invalid = 0
+    touched: set = set()
+    appended: list[dict] = []
+
+    for note in notes_for_volume:
+        title = normalize_text(note.get("title"))
+        content = normalize_text(note.get("content"))
+        if not title or not content:
+            skipped_invalid += 1
+            continue
+        bid = (note.get("book_id") or "").strip() or stable_book_id(title)
+        if bid not in titles:
+            titles[bid] = title
+            new_books += 1
+            touched.add(bid)
+        key = content_dedup_key(bid, content)
+        if key in dedup:
+            skipped_duplicates += 1
+            continue
+        max_idx[bid] = max_idx.get(bid, 0) + 1
+        supplied_idx = note.get("idx_within_book")
+        if isinstance(supplied_idx, int) and supplied_idx > max_idx[bid]:
+            max_idx[bid] = supplied_idx
+        hid = highlight_id(bid, max_idx[bid])
+        appended.append(
+            {
+                "book_id": bid,
+                "book_title": titles[bid],
+                "highlight_id": hid,
+                "location": normalize_text(note.get("location") or note.get("page")),
+                "content": content,
+            }
+        )
+        dedup.add(key)
+        new_highlights += 1
+        touched.add(bid)
+
+    all_highlights = existing_highlights + appended
+    books_in_vol = [{"book_id": bid, "title": titles.get(bid, "")} for bid in titles]
+    highlights_by_book = group_highlights_by_book(all_highlights)
+    new_rows = volume_rows(books_in_vol, highlights_by_book)
+
+    book_meta = {
+        bid: {"title": titles.get(bid, ""), "count": len(highlights_by_book.get(bid, []))}
+        for bid in titles
+    }
+    summary = {
+        "new_books": new_books,
+        "new_highlights": new_highlights,
+        "skipped_duplicates": skipped_duplicates,
+        "skipped_invalid": skipped_invalid,
+        "total_notes": len(notes_for_volume),
+    }
+    return new_rows, summary, touched, book_meta
+
+
+_SUMMARY_KEYS = (
+    "new_books",
+    "new_highlights",
+    "skipped_duplicates",
+    "skipped_invalid",
+    "total_notes",
+)
+
+
+def merge_summaries(summaries) -> dict:
+    """Sum the 5 standard counter keys across a list of per-volume summaries."""
+    out = {key: 0 for key in _SUMMARY_KEYS}
+    for summary in summaries:
+        for key in _SUMMARY_KEYS:
+            out[key] += int(summary.get(key, 0) or 0)
     return out
 
 
@@ -427,62 +634,304 @@ def _write_volume(gc, file_id: str, header_and_rows: list[list[str]]) -> None:
         time.sleep(WRITE_THROTTLE_SECONDS)
 
 
-def main_cli() -> int:
+def _read_volume(gc, file_id: str) -> list[list[str]]:
+    """Return ``get_all_values()`` of sheet 1 of ``file_id`` (header + body)."""
+    return gc.open_by_key(file_id).sheet1.get_all_values()
+
+
+def _resolve_notebooklm_folder(
+    drive,
+    *,
+    spreadsheet_id: str | None = None,
+    parent_folder_id: str | None = None,
+    folder: str = DEFAULT_SUBFOLDER_NAME,
+):
+    """Resolve the folder that holds the 50 files + the spreadsheets in it.
+
+    Resolution order for the configured folder: explicit ``parent_folder_id`` ->
+    ``NOTEBOOKLM_PARENT_FOLDER_ID`` env var -> the (legacy) master spreadsheet's
+    own Drive parent, only when ``spreadsheet_id`` is supplied.
+
+    The configured folder may be **either** the parent that contains a ``folder``
+    subfolder (e.g. ``notebooklm/``) **or** the folder that holds the 50 files
+    *directly*. We first look for a ``folder`` subfolder; if there isn't one, we
+    use the configured folder itself. So ``NOTEBOOKLM_PARENT_FOLDER_ID`` can point
+    straight at the folder containing the 50 files (the intuitive setting).
+
+    Returns ``(sub_id, {filename: file_id})``.
+    """
+    env_parent = os.environ.get(PARENT_FOLDER_ENV_VAR, "").strip()
+    if parent_folder_id:
+        parent_id = parent_folder_id
+        _validate_parent_folder(drive, parent_id)
+    elif env_parent:
+        parent_id = env_parent
+        _validate_parent_folder(drive, parent_id)
+    elif spreadsheet_id:
+        parent_id = _get_parent_folder(drive, spreadsheet_id)
+    else:
+        raise SystemExit(
+            "Cannot locate the NotebookLM destination folder. Set "
+            f"{PARENT_FOLDER_ENV_VAR} in config/KEYS.env to the Drive folder ID "
+            "that holds the 50 files (or its parent)."
+        )
+    sub_id = _find_or_create_subfolder(drive, parent_id, folder, dry_run=True)
+    if sub_id is None:
+        # No ``folder`` subfolder -> the configured folder IS the destination
+        # (the 50 files live directly in it). Use it as-is.
+        sub_id = parent_id
+    existing = _list_spreadsheets_in_folder(drive, sub_id)
+    return sub_id, existing
+
+
+def sync_notes_to_notebooklm(
+    notes,
+    *,
+    apply: bool = True,
+    progress_callback=None,
+    prefix: str = DEFAULT_FILENAME_PREFIX,
+    folder: str = DEFAULT_SUBFOLDER_NAME,
+    parent_folder_id: str | None = None,
+) -> dict:
+    """Merge scraped / manual notes directly into the NotebookLM 50-file layout.
+
+    This is the source-of-truth writer that replaced the retired ``01_books`` /
+    ``02_highlights`` master. For each volume the incoming notes touch (a book is
+    pinned to one volume by :func:`volume_for_book_id`), it reads that volume
+    back, merges new highlights (dedup by content, continuing the per-book
+    ``highlight_id`` numbering), and rewrites the volume; then it refreshes the
+    index. Only touched volumes + the index are written, so a normal incremental
+    scrape stays well inside the Sheets write quota.
+
+    Files absent from the folder are reported in ``missing_files`` (service
+    accounts cannot create Drive files), and their highlights are NOT written.
+
+    Returns ``{new_books, new_highlights, skipped_duplicates, skipped_invalid,
+    total_notes, missing_files, touched_volumes}``. Progress is reported under
+    the existing ``"sheets"`` phase, one tick per file written.
+    """
     if not _RUNTIME_DEPS_OK:
         raise SystemExit(
             "Runtime dependencies missing. Install requirements first: "
             "pip install -r requirements/requirements.txt"
         )
 
-    # Local import so tests do not pay the cost of nest_asyncio etc.
-    import main as repo_main
+    notes = list(notes)
+    summary = {
+        "new_books": 0,
+        "new_highlights": 0,
+        "skipped_duplicates": 0,
+        "skipped_invalid": 0,
+        "total_notes": len(notes),
+        "missing_files": [],
+        "touched_volumes": 0,
+    }
+    if not notes:
+        return summary
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--apply", action="store_true", help="actually write to Drive (default: dry-run)"
-    )
-    parser.add_argument(
-        "--folder",
-        default=DEFAULT_SUBFOLDER_NAME,
-        help=f"name of the destination subfolder (default: {DEFAULT_SUBFOLDER_NAME!r})",
-    )
-    parser.add_argument(
-        "--prefix",
-        default=DEFAULT_FILENAME_PREFIX,
-        help=(
-            "filename prefix for the volume / index files "
-            f"(default: {DEFAULT_FILENAME_PREFIX!r}; produces "
-            f"'{DEFAULT_FILENAME_PREFIX}_index' and "
-            f"'{DEFAULT_FILENAME_PREFIX}_vol_01'..)"
-        ),
-    )
-    parser.add_argument(
-        "--parent-folder",
-        metavar="FOLDER_ID",
-        default=None,
-        help=(
-            "Google Drive folder ID to create the destination subfolder inside. "
-            "Use this when the master spreadsheet lives in 'My Drive' root and "
-            "the Drive API cannot determine its parent automatically. "
-            "Find the ID in the folder's URL: "
-            "drive.google.com/drive/folders/<FOLDER_ID>. "
-            f"For a persistent setting, set the {PARENT_FOLDER_ENV_VAR} env var "
-            "instead (this flag overrides it)."
-        ),
-    )
-    args = parser.parse_args()
+    # Local import (deferred) so importing this module stays cheap and there is
+    # no import-time cycle with ``main`` (which imports this module lazily too).
+    import main as repo_main
 
     repo_main.load_config()
     if not repo_main.GOOGLE_SHEETS_ENABLED:
         raise SystemExit(
-            "Google Sheets is not configured. Set GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE and "
-            "GOOGLE_SHEETS_SPREADSHEET_ID in config/KEYS.env first."
+            "Google Sheets is not configured. Set GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE "
+            "and GOOGLE_SHEETS_SPREADSHEET_ID in config/KEYS.env first."
         )
 
     creds = _build_creds(repo_main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE)
     drive = _drive_session(creds)
-    gc = gspread.authorize(creds)
+    gc = _authorize_sheets(creds)
 
+    sub_id, existing = _resolve_notebooklm_folder(
+        drive,
+        spreadsheet_id=repo_main.GOOGLE_SHEETS_SPREADSHEET_ID,
+        parent_folder_id=parent_folder_id,
+        folder=folder,
+    )
+
+    today = today_iso()
+
+    # Route each valid note to its volume; pre-count blank ones as invalid so we
+    # never read/write a volume just to drop a degenerate note.
+    notes_by_volume: dict[int, list[dict]] = {}
+    prefiltered_invalid = 0
+    for note in notes:
+        title = normalize_text(note.get("title"))
+        content = normalize_text(note.get("content"))
+        if not title or not content:
+            prefiltered_invalid += 1
+            continue
+        bid = (note.get("book_id") or "").strip() or stable_book_id(title)
+        notes_by_volume.setdefault(volume_for_book_id(bid), []).append(note)
+
+    affected = sorted(notes_by_volume)
+    total_files = len(affected) + 1  # + index
+    if len(affected) > 20:
+        print(
+            f"[notebooklm] {len(affected)} volumes affected; this run issues "
+            f"~{total_files * 2} write requests and may take a few minutes "
+            "(paced to stay under the Sheets quota).",
+            flush=True,
+        )
+
+    summaries: list[dict] = []
+    missing_files: list[str] = []
+    touched_all: set = set()
+    book_meta: dict[str, dict] = {}
+    written = 0
+
+    for i, volume in enumerate(affected):
+        fname = volume_filename(prefix, volume)
+        file_id = existing.get(fname)
+        if not file_id:
+            missing_files.append(fname)
+            if progress_callback:
+                progress_callback("sheets", i + 1, total_files, f"{fname} [missing]")
+            continue
+        new_rows, vol_summary, touched, vol_book_meta = merge_notes_into_volume(
+            _read_volume(gc, file_id), notes_by_volume[volume], today=today
+        )
+        summaries.append(vol_summary)
+        touched_all |= touched
+        book_meta.update(vol_book_meta)
+        if apply:
+            _write_volume(gc, file_id, new_rows)
+            written += 1
+        if progress_callback:
+            progress_callback("sheets", i + 1, total_files, fname)
+
+    # Refresh the index ONLY for touched books (gained a highlight / new book),
+    # preserving every untouched row -- so an untouched book keeps its stored
+    # highlight_count + last_synced_at.
+    index_fname = index_filename(prefix)
+    index_id = existing.get(index_fname)
+    if not index_id:
+        missing_files.append(index_fname)
+    elif touched_all:
+        books_by_id: dict[str, dict] = {}
+        for raw in _strip_header(_read_volume(gc, index_id), INDEX_HEADERS):
+            book = _index_row_to_book(raw)
+            if book["book_id"]:
+                books_by_id[book["book_id"]] = book
+        for bid in touched_all:
+            meta = book_meta.get(bid)
+            if not meta:
+                continue
+            books_by_id[bid] = {
+                "book_id": bid,
+                "title": meta["title"],
+                "highlight_count": str(meta["count"]),
+                "last_synced_at": today,
+            }
+        index_new_rows = index_rows(list(books_by_id.values()), {}, prefix)
+        if apply:
+            _write_volume(gc, index_id, index_new_rows)
+        if progress_callback:
+            progress_callback("sheets", total_files, total_files, index_fname)
+
+    final = merge_summaries(summaries)
+    final["skipped_invalid"] += prefiltered_invalid
+    final["total_notes"] = len(notes)
+    final["missing_files"] = missing_files
+    final["touched_volumes"] = written
+    return final
+
+
+def list_books_from_index(
+    service_account_file,
+    spreadsheet_id: str | None = None,
+    *,
+    parent_folder_id: str | None = None,
+    prefix: str = DEFAULT_FILENAME_PREFIX,
+    folder: str = DEFAULT_SUBFOLDER_NAME,
+) -> list[dict]:
+    """Read existing books from the NotebookLM ``<prefix>_index`` file.
+
+    Read-only replacement for ``toSheets.list_existing_books`` now that the
+    master is retired. Returns ``[{book_id, title, author, highlight_count}]``
+    sorted by title (``author`` is always ``""`` -- the index carries no author
+    column; title matching only needs the title). Returns ``[]`` when the index
+    file is missing.
+    """
+    if not _RUNTIME_DEPS_OK:
+        raise SystemExit(
+            "Runtime dependencies missing. Install requirements first: "
+            "pip install -r requirements/requirements.txt"
+        )
+    creds = _build_creds(service_account_file)
+    drive = _drive_session(creds)
+    gc = _authorize_sheets(creds)
+
+    _sub_id, existing = _resolve_notebooklm_folder(
+        drive, spreadsheet_id=spreadsheet_id, parent_folder_id=parent_folder_id, folder=folder
+    )
+    index_id = existing.get(index_filename(prefix))
+    if not index_id:
+        return []
+
+    out: list[dict] = []
+    for raw in _strip_header(_read_volume(gc, index_id), INDEX_HEADERS):
+        book = _index_row_to_book(raw)
+        if not book["book_id"] or not book["title"]:
+            continue
+        out.append(
+            {
+                "book_id": book["book_id"],
+                "title": book["title"],
+                "author": "",
+                "highlight_count": book["highlight_count"],
+            }
+        )
+    out.sort(key=lambda b: b["title"])
+    return out
+
+
+def _rebuild_index_from_volumes(gc, existing: dict, prefix: str) -> list[list[str]]:
+    """Rebuild the index rows from the 49 volume files (volumes = source of truth).
+
+    Volumes are self-describing, so the full catalogue (book_id, title,
+    highlight_count) is recoverable without the retired master. ``last_synced_at``
+    is left blank because volumes do not record it. Returns the header + body
+    rows for the index sheet.
+    """
+    books_by_id: dict[str, dict] = {}
+    for volume in range(1, VOLUME_COUNT + 1):
+        file_id = existing.get(volume_filename(prefix, volume))
+        if not file_id:
+            continue
+        for raw in _strip_header(_read_volume(gc, file_id), VOLUME_HEADERS):
+            hl = _volume_row_to_highlight(raw)
+            bid = hl["book_id"]
+            if not bid:
+                continue
+            book = books_by_id.setdefault(
+                bid, {"book_id": bid, "title": hl["book_title"], "_count": 0, "last_synced_at": ""}
+            )
+            book["_count"] += 1
+            if hl["book_title"] and not book["title"]:
+                book["title"] = hl["book_title"]
+    for book in books_by_id.values():
+        book["highlight_count"] = str(book.pop("_count"))
+    return index_rows(list(books_by_id.values()), {}, prefix)
+
+
+def _cli_from_master(gc, existing: dict, repo_main, args) -> int:
+    """LEGACY: re-split all 50 files from the retired master. OVERWRITES everything.
+
+    Highlights now flow into the volumes directly via
+    :func:`sync_notes_to_notebooklm`, so the master is normally never read. This
+    path exists only for a one-time backfill from an old master and clobbers any
+    highlights added to the volumes since the master was last updated.
+    """
+    print(
+        "\n[WARNING] --from-master reads the RETIRED 01_books/02_highlights master "
+        "and OVERWRITES all 50 NotebookLM files with it. Any highlights added to the "
+        "volumes after the master was last updated will be LOST. Use only for a "
+        "one-time backfill.\n",
+        flush=True,
+    )
     books, highlights = _load_master(gc, repo_main.GOOGLE_SHEETS_SPREADSHEET_ID)
     highlights_by_book = group_highlights_by_book(highlights)
     books_by_volume = group_books_by_volume(books)
@@ -491,27 +940,6 @@ def main_cli() -> int:
         f"[layout] {VOLUME_COUNT} volumes + 1 index = {VOLUME_COUNT + 1} files, "
         f"prefix '{args.prefix}'"
     )
-
-    env_parent = os.environ.get(PARENT_FOLDER_ENV_VAR, "").strip()
-    if args.parent_folder:
-        parent_id = args.parent_folder
-        _validate_parent_folder(drive, parent_id)
-        print(f"[parent] folder id = {parent_id}  (from --parent-folder)")
-    elif env_parent:
-        parent_id = env_parent
-        _validate_parent_folder(drive, parent_id)
-        print(f"[parent] folder id = {parent_id}  (from ${PARENT_FOLDER_ENV_VAR})")
-    else:
-        parent_id = _get_parent_folder(drive, repo_main.GOOGLE_SHEETS_SPREADSHEET_ID)
-        print(f"[parent] folder id = {parent_id}")
-
-    sub_id = _find_or_create_subfolder(drive, parent_id, args.folder, dry_run=not args.apply)
-    if sub_id is None:
-        print(f"[dry-run] subfolder '{args.folder}' does not exist; would create it.")
-    else:
-        print(f"[subfolder] '{args.folder}' id = {sub_id}")
-
-    existing = _list_spreadsheets_in_folder(drive, sub_id) if sub_id else {}
 
     # Build the fixed set of (filename, rows, label) targets: index first.
     targets: list[tuple[str, list[list[str]], str]] = [
@@ -574,6 +1002,121 @@ def main_cli() -> int:
     if not args.apply:
         print("\n(dry-run) re-run with --apply to write content to existing files.")
     return 0
+
+
+def _cli_rebuild_index(gc, existing: dict, args) -> int:
+    """Default CLI mode: rebuild ``<prefix>_index`` from the 49 volume files.
+
+    Safe -- it never reads the retired master and never overwrites a volume; it
+    only regenerates the index catalogue from the volumes (the source of truth).
+    Useful to recover/refresh the index outside the automatic sync.
+    """
+    print(
+        "[mode] rebuild index from the volume files "
+        "(the retired master is NOT read; use --from-master for the legacy backfill)"
+    )
+    index_fname = index_filename(args.prefix)
+    index_id = existing.get(index_fname)
+    rows = _rebuild_index_from_volumes(gc, existing, args.prefix)
+    book_count = max(len(rows) - 1, 0)
+
+    if not index_id:
+        print(
+            f"  [missing] {index_fname}  ({book_count} books) -- "
+            "create it once as a Google Sheet with that exact name, then re-run."
+        )
+        return 0
+    if args.apply:
+        _write_volume(gc, index_id, rows)
+        print(f"  [update ] {index_fname}  ({book_count} books)  id={index_id}")
+    else:
+        print(f"  [update ] {index_fname}  ({book_count} books)")
+        print("\n(dry-run) re-run with --apply to rewrite the index file.")
+    return 0
+
+
+def main_cli() -> int:
+    if not _RUNTIME_DEPS_OK:
+        raise SystemExit(
+            "Runtime dependencies missing. Install requirements first: "
+            "pip install -r requirements/requirements.txt"
+        )
+
+    # Local import so tests do not pay the cost of nest_asyncio etc.
+    import main as repo_main
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--apply", action="store_true", help="actually write to Drive (default: dry-run)"
+    )
+    parser.add_argument(
+        "--folder",
+        default=DEFAULT_SUBFOLDER_NAME,
+        help=f"name of the destination subfolder (default: {DEFAULT_SUBFOLDER_NAME!r})",
+    )
+    parser.add_argument(
+        "--prefix",
+        default=DEFAULT_FILENAME_PREFIX,
+        help=(
+            "filename prefix for the volume / index files "
+            f"(default: {DEFAULT_FILENAME_PREFIX!r}; produces "
+            f"'{DEFAULT_FILENAME_PREFIX}_index' and "
+            f"'{DEFAULT_FILENAME_PREFIX}_vol_01'..)"
+        ),
+    )
+    parser.add_argument(
+        "--parent-folder",
+        metavar="FOLDER_ID",
+        default=None,
+        help=(
+            "Google Drive folder ID to create the destination subfolder inside. "
+            "Use this when the master spreadsheet lives in 'My Drive' root and "
+            "the Drive API cannot determine its parent automatically. "
+            "Find the ID in the folder's URL: "
+            "drive.google.com/drive/folders/<FOLDER_ID>. "
+            f"For a persistent setting, set the {PARENT_FOLDER_ENV_VAR} env var "
+            "instead (this flag overrides it)."
+        ),
+    )
+    parser.add_argument(
+        "--from-master",
+        action="store_true",
+        help=(
+            "LEGACY: re-split all 50 files from the retired 01_books/02_highlights "
+            "master. Highlights now flow into the volumes directly (via "
+            "sync_notes_to_notebooklm), so the master is normally NOT read. Only use "
+            "this for a one-time backfill -- it OVERWRITES all 50 files and clobbers "
+            "any highlights added after the master was last updated. Without this "
+            "flag the default action rebuilds only the index from the volumes."
+        ),
+    )
+    args = parser.parse_args()
+
+    repo_main.load_config()
+    if not repo_main.GOOGLE_SHEETS_ENABLED:
+        raise SystemExit(
+            "Google Sheets is not configured. Set GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE and "
+            "GOOGLE_SHEETS_SPREADSHEET_ID in config/KEYS.env first."
+        )
+
+    creds = _build_creds(repo_main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE)
+    drive = _drive_session(creds)
+    gc = _authorize_sheets(creds)
+
+    # Resolve the destination folder (same logic + fallback as the sync path:
+    # the configured folder may be the parent of a `notebooklm/` subfolder, or
+    # the folder that holds the 50 files directly).
+    sub_id, existing = _resolve_notebooklm_folder(
+        drive,
+        spreadsheet_id=repo_main.GOOGLE_SHEETS_SPREADSHEET_ID,
+        parent_folder_id=args.parent_folder,
+        folder=args.folder,
+    )
+    print(f"[folder] destination folder id = {sub_id}  ({len(existing)} spreadsheets present)")
+
+    if args.from_master:
+        return _cli_from_master(gc, existing, repo_main, args)
+    return _cli_rebuild_index(gc, existing, args)
 
 
 if __name__ == "__main__":

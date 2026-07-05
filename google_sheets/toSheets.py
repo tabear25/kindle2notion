@@ -1,5 +1,17 @@
 """Write Kindle highlights to Google Sheets in the v2 multi-sheet schema.
 
+.. deprecated::
+    This module writes the **retired** ``01_books`` / ``02_highlights`` master
+    spreadsheet. The live source of truth is now the NotebookLM 50-file layout;
+    highlights flow into it directly via
+    ``scripts.split_per_book.sync_notes_to_notebooklm`` (Kindle scrape + manual
+    add). Nothing in the production pipeline calls
+    :func:`save_notes_to_google_sheets` / :func:`list_existing_books` anymore --
+    they are kept as the reference dedup/numbering implementation, for the
+    ``scripts.split_per_book --from-master`` legacy backfill, and for the
+    one-shot ``scripts.migrate_legacy_sheet`` migration. Do not wire them into
+    new code.
+
 Two worksheets are managed by this module:
 
 * ``01_books``      -- one row per book.
@@ -139,12 +151,14 @@ def _load_books(worksheet) -> dict:
 def list_existing_books(service_account_file, spreadsheet_id) -> list[dict]:
     """Return existing books from ``01_books`` as lightweight dicts.
 
+    .. deprecated:: superseded by
+        ``scripts.split_per_book.list_books_from_index``, which reads the live
+        NotebookLM index file. This reader targets the retired ``01_books``
+        master and is no longer called by the manual-entry tooling.
+
     Read-only: opens the spreadsheet and reads ``01_books`` without creating or
     modifying anything. Each entry is ``{"book_id", "title", "author",
-    "highlight_count"}``. Used by the manual-entry tooling so an assistant can
-    fuzzy-match a user-typed title against titles already on record and catch
-    typos before they create a duplicate book (book_id is title-derived).
-    Returns ``[]`` if the sheet is missing or empty.
+    "highlight_count"}``. Returns ``[]`` if the sheet is missing or empty.
     """
     client = _build_client(service_account_file)
     spreadsheet = _open_spreadsheet(client, spreadsheet_id)
@@ -222,10 +236,14 @@ def save_notes_to_google_sheets(
 ):
     """Append new books / highlights to the v2 schema worksheets.
 
+    .. deprecated:: superseded by
+        ``scripts.split_per_book.sync_notes_to_notebooklm``. Writes the retired
+        ``01_books`` / ``02_highlights`` master; no longer called by the GUI /
+        web / manual pipelines. Kept as the reference dedup + ``highlight_id``
+        numbering implementation and for the ``--from-master`` backfill.
+
     Returns a summary dict ``{"new_books", "new_highlights",
-    "skipped_duplicates", "skipped_invalid", "total_notes"}``. Existing callers
-    (GUI / web pipeline) ignore the return value; manual-entry tooling uses it
-    to report what was written.
+    "skipped_duplicates", "skipped_invalid", "total_notes"}``.
     """
     notes = list(notes)
     client = _build_client(service_account_file)
