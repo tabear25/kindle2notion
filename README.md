@@ -210,6 +210,9 @@ py -3 -m scripts.split_per_book --apply
 
 推奨構成は **Render（バックエンド）+ Vercel（フロント）+ Turso（運用DB）** です。
 
+> **初めてデプロイする場合はまず [`docs/DEPLOY_TURSO_RENDER_VERCEL.md`](docs/DEPLOY_TURSO_RENDER_VERCEL.md) を読んでください。**
+> STEP 0〜4 の手順書1枚で、ローカル確認からスマホでの接続設定まで完結します。
+
 | 方式 | 用途 | 詳細 |
 |---|---|---|
 | ローカル GUI | 自分の PC で完結 | `python main.py` |
