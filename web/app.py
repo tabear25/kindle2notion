@@ -3,9 +3,9 @@ import os
 import threading
 import time
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, request, send_from_directory
 
-from config import load_env_file
+from config import BASE_DIR, load_env_file
 from scripts.add_manual_highlights import (
     DEFAULT_MATCH_CUTOFF,
     SheetsNotConfigured,
@@ -14,7 +14,11 @@ from scripts.add_manual_highlights import (
     summarize_plan,
     write_notes,
 )
+from storage import get_store_or_none
+from web.cors import init_cors
 from web.pipeline import PipelineState, run_pipeline
+
+SSE_PING_INTERVAL_SECONDS = 15
 
 
 def _parse_max_books(value):
@@ -32,9 +36,18 @@ def _parse_max_books(value):
     return parsed
 
 
+# The UI lives in frontend/ — one static codebase served both by this Flask
+# app (same origin) and by Vercel (cross origin against the deployed API).
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+
 def create_app():
     load_env_file()
-    app = Flask(__name__)
+    app = Flask(
+        __name__,
+        static_folder=str(FRONTEND_DIR / "static"),
+        static_url_path="/static",
+    )
 
     # ------------------------------------------------------------------
     # Shared state (single-user tool — one pipeline at a time)
@@ -51,6 +64,10 @@ def create_app():
 
     @app.before_request
     def _check_auth():
+        if request.method == "OPTIONS":
+            # CORS preflights never carry Authorization; web/cors.py answers
+            # them (or Flask's default OPTIONS response does).
+            return None
         if request.path == "/healthz":
             return None
         if not auth_enabled:
@@ -70,7 +87,7 @@ def create_app():
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return send_from_directory(str(FRONTEND_DIR), "index.html")
 
     @app.route("/healthz")
     def healthz():
@@ -87,13 +104,14 @@ def create_app():
         try:
             body = request.get_json(silent=True) or {}
             max_books = _parse_max_books(body.get("max_books"))
+            full_resync = bool(body.get("full_resync", False))
 
             # Reset state for a new run
             state = PipelineState()
 
             worker = threading.Thread(
                 target=_run_and_release,
-                args=(state, max_books),
+                args=(state, max_books, full_resync),
                 daemon=True,
             )
             worker.start()
@@ -105,9 +123,9 @@ def create_app():
             run_lock.release()
             raise
 
-    def _run_and_release(pipeline_state, max_books):
+    def _run_and_release(pipeline_state, max_books, full_resync=False):
         try:
-            run_pipeline(pipeline_state, max_books)
+            run_pipeline(pipeline_state, max_books, full_resync=full_resync)
         finally:
             run_lock.release()
 
@@ -122,17 +140,26 @@ def create_app():
 
     @app.route("/api/events")
     def api_events():
-        """Server-Sent Events stream for real-time progress."""
+        """Server-Sent Events stream for real-time progress.
+
+        Comment pings keep the stream alive through proxy idle timeouts
+        during long quiet stretches (e.g. the up-to-5-minute 2FA wait).
+        """
         def generate():
             last_index = 0
+            last_sent = time.time()
             while True:
                 events, new_index = state.get_events_since(last_index)
                 last_index = new_index
                 for event in events:
                     payload = json.dumps(event["data"], ensure_ascii=False)
                     yield f"event: {event['type']}\ndata: {payload}\n\n"
+                    last_sent = time.time()
                 if state.status in ("done", "error"):
                     break
+                if time.time() - last_sent >= SSE_PING_INTERVAL_SECONDS:
+                    yield ": ping\n\n"
+                    last_sent = time.time()
                 time.sleep(0.3)
 
         return Response(generate(), mimetype="text/event-stream",
@@ -143,6 +170,18 @@ def create_app():
     def api_status():
         """Fallback polling endpoint."""
         return jsonify({"status": state.status})
+
+    @app.route("/api/runs")
+    def api_runs():
+        """Recent sync history from the operational store (best-effort)."""
+        store = get_store_or_none()
+        if store is None:
+            return jsonify({"available": False, "runs": []})
+        try:
+            runs = store.list_runs(limit=20)
+        except Exception as exc:
+            return jsonify({"available": False, "runs": [], "error": str(exc)})
+        return jsonify({"available": True, "runs": runs})
 
     # ------------------------------------------------------------------
     # Manual (non-Kindle) highlights — phone / assistant friendly API
@@ -256,4 +295,5 @@ def create_app():
             "ok": not result["problems"],
         })
 
+    init_cors(app)
     return app

@@ -26,4 +26,6 @@ COPY . .
 # Render injects PORT at runtime; EXPOSE documents the default for local runs.
 EXPOSE 10000
 
-CMD ["python", "web_main.py"]
+# Production server. `python web_main.py` (Werkzeug dev server) remains for
+# local development and the VPS systemd unit.
+CMD ["gunicorn", "-c", "gunicorn.conf.py", "web_main:app"]

@@ -1,11 +1,12 @@
-import json
 import threading
 import traceback
 
 from playwright.sync_api import sync_playwright
 
 import main
+from book_transformer import transformer
 from notion import toNotion
+from run_history import record_run_end, record_run_start, run_stats
 
 
 class PipelineState:
@@ -70,13 +71,16 @@ class PipelineState:
             return self.events[index:], len(self.events)
 
 
-def run_pipeline(state, max_books):
+def run_pipeline(state, max_books, full_resync=False):
     """Execute the full scrape -> Notion -> Sheets pipeline.
 
     Intended to run in a background :class:`threading.Thread`.
+    ``full_resync=True`` rebuilds the Notion dedup cache from the live
+    database before writing (restores pure-scan semantics for this run).
     """
     state.status = "running"
     state._push_event("started", {})
+    store, run_id = record_run_start("web")
 
     try:
         main.load_config()
@@ -90,17 +94,19 @@ def run_pipeline(state, max_books):
                 headless_login=True,
             )
 
-        toNotion.save_notes_to_notion(
+        notion_summary = toNotion.save_notes_to_notion(
             main.NOTION_API_KEY,
             main.NOTION_DATABASE_ID,
             notes,
             progress_callback=state.progress_callback,
+            force_resync=full_resync,
         )
 
+        sheets_summary = None
         if main.GOOGLE_SHEETS_ENABLED:
             from google_sheets import toSheets
 
-            toSheets.save_notes_to_google_sheets(
+            sheets_summary = toSheets.save_notes_to_google_sheets(
                 main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
                 main.GOOGLE_SHEETS_SPREADSHEET_ID,
                 notes,
@@ -109,8 +115,16 @@ def run_pipeline(state, max_books):
 
         state.status = "done"
         state._push_event("done", {"notes_count": len(notes)})
+        record_run_end(
+            store, run_id, status="done",
+            **run_stats(notes, notion_summary, sheets_summary),
+        )
 
     except Exception as e:
         state.status = "error"
         state._push_event("pipeline_error", {"message": str(e)})
         traceback.print_exc()
+        record_run_end(
+            store, run_id, status="error", error=str(e),
+            scrape_mode=transformer.last_scrape_mode,
+        )

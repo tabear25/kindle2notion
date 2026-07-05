@@ -6,19 +6,22 @@ VPS 版 (`deploy/README.md`) よりも手順が少なく、サーバー管理 (O
 ## 仕組み
 
 ```
-スマホ / PC ──HTTPS──▶ Render (xxxx.onrender.com)
-                        │
-                        ▼
-              ┌─ Docker コンテナ ──────────────┐
-              │  python web_main.py            │
-              │   └ Flask (0.0.0.0:$PORT)      │
-              │   └ Playwright + Chromium      │
+スマホ / PC ──HTTPS──▶ Render (xxxx.onrender.com)      ┌────────────┐
+   （または Vercel の静的フロント → CORS 経由）          │   Turso    │
+                        │                              │ ・Amazon   │
+                        ▼                              │   セッション│
+              ┌─ Docker コンテナ ──────────────┐        │ ・Notion   │
+              │  gunicorn (gthread ×1 worker)  │◀──────▶│   重複キー │
+              │   └ Flask (0.0.0.0:$PORT)      │        │ ・実行履歴 │
+              │   └ Playwright + Chromium      │        └────────────┘
               │  Basic 認証 (WEB_USERNAME/...)  │
               └────────────────────────────────┘
 ```
 
 Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナを起動します。
 `render.yaml` (Blueprint) を使うと、サービス作成と環境変数入力をまとめて行えます。
+**Turso を設定すると、無料プランでもコンテナ再起動後に 2FA ログインが不要になります**
+（Amazon セッションを Turso から復元するため）。
 
 ## 前提
 
@@ -63,9 +66,23 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 | `NOTION_DATABASE_ID` | ✅ | 保存先 Notion データベースの ID |
 | `WEB_USERNAME` | ⭐ 強く推奨 | Web UI のログイン ID |
 | `WEB_PASSWORD` | ⭐ 強く推奨 | Web UI のログインパスワード |
+| `TURSO_DATABASE_URL` | ⭐ 強く推奨 | Turso DB の URL（`libsql://xxxx.turso.io`）。セッション永続化・重複キャッシュ・実行履歴に使用 |
+| `TURSO_AUTH_TOKEN` | ⭐ 強く推奨 | Turso の認証トークン |
+| `CORS_ALLOWED_ORIGINS` | Vercel 併用時 | フロントのオリジン（例: `https://kindle2notion.vercel.app`） |
 | `GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE` | 任意 | サービスアカウント JSON（**文字列そのものを貼り付け**） |
 | `GOOGLE_SHEETS_SPREADSHEET_ID` | 任意 | エクスポート先スプレッドシート ID |
+| `SCRAPE_MODE` | 任意 | 既定 `xhr`。`dom` で従来のクリック方式を強制 |
 | `STORAGE_STATE_PATH` | 任意 | セッション保存先（永続ディスク利用時のみ設定） |
+
+### Turso のセットアップ（無料・5分）
+
+1. https://app.turso.tech にサインアップ（GitHub 連携可）
+2. **Create Database** → 名前は例: `kindle2notion`（リージョンは Tokyo/NRT が最寄り）
+3. データベースの URL（`libsql://...`）をコピー → `TURSO_DATABASE_URL` に設定
+4. **Create Token**（Database の設定画面）→ トークンをコピー → `TURSO_AUTH_TOKEN` に設定
+
+テーブルはアプリが初回アクセス時に自動作成します（マイグレーション不要）。
+ローカルの `config/KEYS.env` にも同じ値を書けば、手元の実行と Render がセッションを共有します。
 
 > **⚠️ `WEB_USERNAME` / `WEB_PASSWORD` は必ず設定してください。**
 > 設定しないと URL を知っている誰でもあなたの Amazon アカウントでスクレイピングを
@@ -82,24 +99,27 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 
 | 項目 | 内容 |
 |---|---|
-| スリープ | 15 分アクセスが無いとコンテナ停止。次アクセス時に起動待ち（数十秒〜1分） |
-| ディスク非永続 | コンテナ再起動で `storage_state.json` が消える → **起動のたびに 2FA ログインが必要** |
-| メモリ | 512MB。書籍数が多いと Chromium がメモリ不足で落ちることがある（その場合は上位プランへ） |
+| スリープ | 15 分アクセスが無いとコンテナ停止。次アクセス時に起動待ち（数十秒〜1分）。Vercel フロントは起動中バナーを出して自動でウェイクアップします |
+| ディスク非永続 | `TURSO_*` を設定していれば問題なし（セッションは Turso から復元）。未設定だと再起動のたびに 2FA ログインが必要 |
+| メモリ | 512MB。書籍数が多いと Chromium がメモリ不足で落ちることがある（その場合は上位プランへ）。既定の XHR モードはクリック方式よりメモリ負荷が軽めです |
 | ビルド時間 | 初回は Chromium インストールで 10〜15 分 |
 
-## セッションを永続化する（有料プラン）
+## セッションを永続化する
 
-`storage_state.json` を永続化すると 2FA ログインの頻度を減らせます。
-**永続ディスクを付けると無料プランは使えなくなります**（Starter プラン以上が必要）。
+**推奨: Turso を使う（無料プランのままでOK）** — 上記「Turso のセットアップ」の 2 変数を
+設定するだけで、Amazon セッションが再起動・再デプロイをまたいで保持されます。
+
+<details>
+<summary>代替: 永続ディスクを使う（Starter プラン以上）</summary>
 
 1. `render.yaml` の `plan: free` を `plan: starter` に変更。
 2. `render.yaml` 末尾の `disk:` ブロックのコメントアウトを外す。
 3. 環境変数を追加:
    - `STORAGE_STATE_PATH` = `/var/data/storage_state.json`
+   - `K2N_LOCAL_DB_PATH` = `/var/data/local_store.db`
 4. commit & push → Render が再デプロイ。
 
-これで Amazon セッションがディスク `/var/data` に保存され、
-再起動・再デプロイをまたいで保持されます。
+</details>
 
 ## 動作確認
 
@@ -120,4 +140,10 @@ Render は GitHub リポジトリの `Dockerfile` をビルドしてコンテナ
 - 無料・Starter プランは 512MB です。一度に処理する書籍数を減らすか、上位プランを検討してください。
 
 **毎回 2FA を求められる**
-- 無料プランの仕様です（ディスク非永続）。上記「セッションを永続化する」を参照してください。
+- `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` が設定されているか確認してください。
+  設定済みなら Logs に `Warning: operational store unavailable` 等が出ていないかを確認します
+  （トークン失効・URL 間違いが典型です）。
+
+**Vercel フロントから CORS エラーになる**
+- `CORS_ALLOWED_ORIGINS` に Vercel の URL を完全一致（末尾スラッシュなし）で設定してください。
+  詳細は `deploy/vercel/README.md` を参照。

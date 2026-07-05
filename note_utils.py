@@ -69,6 +69,18 @@ def has_any_note_value(values: Iterable[str]) -> bool:
     return any(normalize_text(value) for value in values)
 
 
+def note_key_hash(key: tuple[str, str, str]) -> str:
+    """SHA1 hex digest of a Notion dedup key tuple.
+
+    This is what the operational store caches instead of the raw
+    ``(title, content, page)`` tuple, so highlight text never leaves
+    Notion/Sheets. Fields are joined with a unit separator so shifted
+    boundaries (``("a", "b|c")`` vs ``("a|b", "c")``) cannot collide.
+    """
+    joined = "\x1f".join(key)
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # v2 helpers (new multi-sheet schema)
 # ---------------------------------------------------------------------------

@@ -36,7 +36,95 @@
   var doneMessage = document.getElementById("done-message");
   var errorMessage = document.getElementById("error-message");
 
-  var eventSource = null;
+  var fullResync = document.getElementById("full-resync");
+  var backendBanner = document.getElementById("backend-banner");
+  var apiBaseInput = document.getElementById("api-base");
+  var apiUserInput = document.getElementById("api-user");
+  var apiPassInput = document.getElementById("api-pass");
+  var btnSaveSettings = document.getElementById("btn-save-settings");
+  var settingsStatus = document.getElementById("settings-status");
+
+  // ----------------------------------------------------------------
+  // Backend connection
+  //
+  // Same-origin by default (API_BASE = ""): served from Flask, the browser
+  // handles Basic auth natively and no extra header is sent. When this page
+  // is hosted statically (Vercel), the user saves the Render URL + Basic
+  // credentials once; they persist in localStorage and every request goes
+  // out with an explicit Authorization header.
+  // ----------------------------------------------------------------
+
+  var settings = {
+    apiBase: (localStorage.getItem("k2n_api_base") || "").replace(/\/+$/, ""),
+    user: localStorage.getItem("k2n_api_user") || "",
+    pass: localStorage.getItem("k2n_api_pass") || "",
+  };
+
+  function apiFetch(path, options) {
+    options = options || {};
+    var headers = {};
+    Object.keys(options.headers || {}).forEach(function (key) {
+      headers[key] = options.headers[key];
+    });
+    if (settings.apiBase && settings.user) {
+      headers["Authorization"] = "Basic " + btoa(settings.user + ":" + settings.pass);
+    }
+    options.headers = headers;
+    return fetch(settings.apiBase + path, options);
+  }
+
+  function loadSettingsForm() {
+    apiBaseInput.value = settings.apiBase;
+    apiUserInput.value = settings.user;
+    apiPassInput.value = settings.pass;
+  }
+
+  function saveSettings() {
+    settings.apiBase = apiBaseInput.value.trim().replace(/\/+$/, "");
+    settings.user = apiUserInput.value.trim();
+    settings.pass = apiPassInput.value;
+    localStorage.setItem("k2n_api_base", settings.apiBase);
+    localStorage.setItem("k2n_api_user", settings.user);
+    localStorage.setItem("k2n_api_pass", settings.pass);
+    settingsStatus.textContent = settings.apiBase
+      ? "保存しました。バックエンド: " + settings.apiBase
+      : "保存しました。このページと同じサーバーを使います。";
+    checkBackendHealth();
+  }
+
+  // Render's free plan sleeps after idle; /healthz both probes and wakes it.
+  var healthCheckTimer = null;
+
+  function checkBackendHealth() {
+    if (healthCheckTimer) {
+      clearTimeout(healthCheckTimer);
+      healthCheckTimer = null;
+    }
+    if (!settings.apiBase) {
+      backendBanner.classList.add("hidden");
+      btnStart.disabled = false;
+      return;
+    }
+    backendBanner.classList.remove("hidden");
+    backendBanner.textContent = "バックエンドの状態を確認しています...";
+    btnStart.disabled = true;
+    apiFetch("/healthz")
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error("unhealthy");
+        }
+        backendBanner.textContent = "バックエンドに接続できました。";
+        btnStart.disabled = false;
+        healthCheckTimer = setTimeout(function () {
+          backendBanner.classList.add("hidden");
+        }, 2000);
+      })
+      .catch(function () {
+        backendBanner.textContent =
+          "バックエンドを起動中です（無料プランのためスリープ解除に最大1分ほどかかります）...";
+        healthCheckTimer = setTimeout(checkBackendHealth, 5000);
+      });
+  }
 
   function showScreen(name) {
     Object.keys(screens).forEach(function (key) {
@@ -85,54 +173,126 @@
     setStatus("ログインを待っています...");
   }
 
+  // ----------------------------------------------------------------
+  // SSE over fetch
+  //
+  // EventSource cannot send an Authorization header, so the stream is read
+  // through fetch + ReadableStream instead — identical frames, works both
+  // same-origin and cross-origin. The server replays all events from index
+  // 0 on every connection, so a 2s reconnect after an abnormal close is
+  // lossless (the idempotent handlers simply re-render).
+  // ----------------------------------------------------------------
+
+  var sse = { active: false, controller: null };
+
   function closeSSE() {
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
+    sse.active = false;
+    if (sse.controller) {
+      sse.controller.abort();
+      sse.controller = null;
     }
   }
 
   function connectSSE() {
     closeSSE();
-    eventSource = new EventSource("/api/events");
+    sse.active = true;
+    openEventStream();
+  }
 
-    eventSource.addEventListener("progress", function (event) {
-      var data = JSON.parse(event.data);
-      updatePhase(data.phase, data.current, data.total, data.message);
+  function openEventStream() {
+    if (!sse.active) {
+      return;
+    }
+    var controller = new AbortController();
+    sse.controller = controller;
+
+    apiFetch("/api/events", { signal: controller.signal })
+      .then(function (response) {
+        if (!response.ok || !response.body) {
+          throw new Error("stream unavailable");
+        }
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = "";
+
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) {
+              scheduleReconnect();
+              return;
+            }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var frames = buffer.split("\n\n");
+            buffer = frames.pop();
+            frames.forEach(handleSSEFrame);
+            return pump();
+          });
+        }
+
+        return pump();
+      })
+      .catch(function () {
+        scheduleReconnect();
+      });
+  }
+
+  function scheduleReconnect() {
+    if (!sse.active) {
+      return; // closed deliberately after done / pipeline_error
+    }
+    setTimeout(openEventStream, 2000);
+  }
+
+  function handleSSEFrame(frame) {
+    var eventType = "message";
+    var dataLines = [];
+    frame.split("\n").forEach(function (line) {
+      if (line.indexOf("event:") === 0) {
+        eventType = line.slice(6).trim();
+      } else if (line.indexOf("data:") === 0) {
+        dataLines.push(line.slice(5).trim());
+      }
+      // lines starting with ":" are keep-alive comments — ignored
     });
+    if (dataLines.length === 0 && eventType === "message") {
+      return;
+    }
+    var data = {};
+    try {
+      data = JSON.parse(dataLines.join("\n") || "{}");
+    } catch (error) {
+      data = {};
+    }
+    dispatchSSEEvent(eventType, data);
+  }
 
-    eventSource.addEventListener("2fa_required", function () {
+  function dispatchSSEEvent(eventType, data) {
+    if (eventType === "progress") {
+      updatePhase(data.phase, data.current, data.total, data.message);
+    } else if (eventType === "2fa_required") {
       modal2fa.classList.add("active");
       input2fa.value = "";
       input2fa.focus();
       setStatus("2段階認証コードの入力を待っています...");
-    });
-
-    eventSource.addEventListener("done", function (event) {
-      var data = JSON.parse(event.data);
-
+    } else if (eventType === "done") {
       ["scrape", "notion", "sheets"].forEach(function (phase) {
         var bar = document.getElementById("bar-" + phase);
         if (bar) {
           bar.style.width = "100%";
         }
       });
-
       setStatus("同期が完了しました", "done");
       doneMessage.textContent = data.notes_count + " 件のハイライトを処理しました。";
       modal2fa.classList.remove("active");
       showScreen("done");
       closeSSE();
-    });
-
-    eventSource.addEventListener("pipeline_error", function (event) {
-      var data = JSON.parse(event.data);
+    } else if (eventType === "pipeline_error") {
       modal2fa.classList.remove("active");
       errorMessage.textContent = data.message;
       setStatus("エラーが発生しました", "error");
       showScreen("error");
       closeSSE();
-    });
+    }
   }
 
   function startPipeline() {
@@ -142,11 +302,14 @@
     if (value) {
       body.max_books = value;
     }
+    if (fullResync.checked) {
+      body.full_resync = true;
+    }
 
     btnStart.disabled = true;
     btnStart.textContent = "開始中...";
 
-    fetch("/api/start", {
+    apiFetch("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -158,6 +321,7 @@
           });
         }
 
+        fullResync.checked = false; // one-shot option
         resetProgress();
         showScreen("progress");
         connectSSE();
@@ -180,7 +344,7 @@
     btn2fa.disabled = true;
     btn2fa.textContent = "送信中...";
 
-    fetch("/api/2fa", {
+    apiFetch("/api/2fa", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code: code }),
@@ -310,7 +474,7 @@
     }
     btnManualSearch.disabled = true;
     btnManualSearch.textContent = "検索中...";
-    fetch("/api/manual/books?title=" + encodeURIComponent(title))
+    apiFetch("/api/manual/books?title=" + encodeURIComponent(title))
       .then(function (response) {
         if (!response.ok) {
           throw new Error("候補の検索に失敗しました。");
@@ -371,7 +535,7 @@
     }
     btnManualPreview.disabled = true;
     btnManualPreview.textContent = "確認中...";
-    fetch("/api/manual/highlights", {
+    apiFetch("/api/manual/highlights", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -407,7 +571,7 @@
     }
     btnManualApply.disabled = true;
     btnManualApply.textContent = "追加中...";
-    fetch("/api/manual/highlights", {
+    apiFetch("/api/manual/highlights", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(manualPreviewedPayload),
@@ -469,4 +633,9 @@
       startPipeline();
     }
   });
+
+  btnSaveSettings.addEventListener("click", saveSettings);
+
+  loadSettingsForm();
+  checkBackendHealth();
 })();

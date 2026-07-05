@@ -9,6 +9,8 @@ import amazon.login
 from book_transformer import transformer
 from config import BASE_DIR, load_env_file
 from notion import toNotion
+from storage import get_store_or_none
+from storage.session_store import hydrate_session_file, persist_session_file
 
 nest_asyncio.apply()
 load_env_file()
@@ -82,30 +84,67 @@ def prompt_book_limit():
 def run(playwright, max_books=None, progress_callback=None,
         two_factor_callback=None, headless_login=False):
     load_config()
-    browser = playwright.chromium.launch(headless=headless_login, args=BROWSER_LAUNCH_ARGS)
-    context = browser.new_context()
-    page = context.new_page()
+    store = get_store_or_none()
+    hydrate_session_file(store, STORAGE_STATE_PATH)
 
+    browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
     try:
-        amazon.login.perform_login(
-            page,
-            AMAZON_EMAIL,
-            AMAZON_PASSWORD,
-            two_factor_callback=two_factor_callback,
-            allow_manual_auth=not headless_login,
-        )
-        STORAGE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        context.storage_state(path=str(STORAGE_STATE_PATH))
+        # Fast path: a saved session that still reaches the notebook skips
+        # the whole login (and 2FA) and scrapes right away.
+        if STORAGE_STATE_PATH.exists():
+            context = browser.new_context(storage_state=str(STORAGE_STATE_PATH))
+            page = context.new_page()
+            if amazon.login.is_session_valid(page):
+                notes = transformer.extract_notes(page, max_books=max_books,
+                                                  progress_callback=progress_callback)
+                persist_session_file(context, store, STORAGE_STATE_PATH)
+                return notes
+            context.close()
+
+        if headless_login:
+            # Web mode: log in headless in a fresh context of the same
+            # browser, then scrape in that authenticated context.
+            context = browser.new_context()
+            page = context.new_page()
+            amazon.login.perform_login(
+                page,
+                AMAZON_EMAIL,
+                AMAZON_PASSWORD,
+                two_factor_callback=two_factor_callback,
+                allow_manual_auth=False,
+            )
+            persist_session_file(context, store, STORAGE_STATE_PATH)
+            notes = transformer.extract_notes(page, max_books=max_books,
+                                              progress_callback=progress_callback)
+            persist_session_file(context, store, STORAGE_STATE_PATH)
+            return notes
     finally:
         browser.close()
 
-    headless_browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
-    headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
-    headless_page = headless_context.new_page()
-
+    # GUI mode with no usable session: visible browser for the login (2FA
+    # dialog / manual auth on the page), then scrape headless as before.
+    login_browser = playwright.chromium.launch(headless=False, args=BROWSER_LAUNCH_ARGS)
     try:
+        login_context = login_browser.new_context()
+        login_page = login_context.new_page()
+        amazon.login.perform_login(
+            login_page,
+            AMAZON_EMAIL,
+            AMAZON_PASSWORD,
+            two_factor_callback=two_factor_callback,
+            allow_manual_auth=True,
+        )
+        persist_session_file(login_context, store, STORAGE_STATE_PATH)
+    finally:
+        login_browser.close()
+
+    headless_browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
+    try:
+        headless_context = headless_browser.new_context(storage_state=str(STORAGE_STATE_PATH))
+        headless_page = headless_context.new_page()
         notes = transformer.extract_notes(headless_page, max_books=max_books,
                                           progress_callback=progress_callback)
+        persist_session_file(headless_context, store, STORAGE_STATE_PATH)
         return notes
     finally:
         headless_browser.close()
@@ -118,6 +157,10 @@ if __name__ == "__main__":
     window = gui.ProgressWindow(total_books=max_books)
 
     def _worker():
+        from book_transformer import transformer as _transformer
+        from run_history import record_run_end, record_run_start, run_stats
+
+        store, run_id = record_run_start("gui")
         try:
             with sync_playwright() as p:
                 notes = run(
@@ -126,25 +169,34 @@ if __name__ == "__main__":
                     progress_callback=window.update,
                     two_factor_callback=window.prompt_two_factor_code,
                 )
-            toNotion.save_notes_to_notion(
+            notion_summary = toNotion.save_notes_to_notion(
                 NOTION_API_KEY, NOTION_DATABASE_ID, notes,
                 progress_callback=window.update,
             )
             print("Saved notes to Notion.")
+            sheets_summary = None
             if GOOGLE_SHEETS_ENABLED:
                 from google_sheets import toSheets
 
-                toSheets.save_notes_to_google_sheets(
+                sheets_summary = toSheets.save_notes_to_google_sheets(
                     GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE,
                     GOOGLE_SHEETS_SPREADSHEET_ID,
                     notes,
                     progress_callback=window.update,
                 )
                 print("Saved notes to Google Sheets.")
+            record_run_end(
+                store, run_id, status="done",
+                **run_stats(notes, notion_summary, sheets_summary),
+            )
             window.mark_done()
         except KeyboardInterrupt:
             raise
         except BaseException as e:
+            record_run_end(
+                store, run_id, status="error", error=str(e),
+                scrape_mode=_transformer.last_scrape_mode,
+            )
             window.mark_error(str(e))
 
     thread = threading.Thread(target=_worker, daemon=True)

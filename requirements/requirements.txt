@@ -6,3 +6,5 @@ tqdm
 gspread
 google-auth
 flask
+requests
+gunicorn

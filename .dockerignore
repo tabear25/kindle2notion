@@ -16,6 +16,9 @@ CODEX_KEY_CONTEXT.md
 # Local data and tooling not needed at runtime
 test/
 .claude/
+local_store.db
+.pytest_cache/
+.pytest_tmp/
 
 # Other deployment targets and documentation
 deploy/
