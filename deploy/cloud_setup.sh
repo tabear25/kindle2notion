@@ -8,7 +8,7 @@
 # never launches one (only the Kindle scraper does), so the pip wheel is enough
 # and `import main` (which imports playwright) still works.
 #
-# Configure these in the cloud environment first (see DOCUMENTS/MANUAL_HIGHLIGHTS.md):
+# Configure these in the cloud environment first (see docs/MANUAL_HIGHLIGHTS.md):
 #   - Environment variables:
 #       NOTION_API_KEY, NOTION_DATABASE_ID,
 #       GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE  (the service-account JSON, as a string),
