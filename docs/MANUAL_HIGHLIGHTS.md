@@ -1,8 +1,8 @@
 # 手動ハイライト追加ガイド (`add_manual_highlights.py`)
 
 Kindle 以外の本（紙の本・他ストアの電子書籍・図書館の本など）のハイライトを
-Notion と NotebookLM 用の 50 ファイル（`split_per_book.sync_notes_to_notebooklm`）へ
-追加するスクリプトです。`--apply` でそのまま 50 ファイルへ反映されます（旧
+Notion と NotebookLM 用の 100 ファイル（`split_per_book.sync_notes_to_notebooklm`）へ
+追加するスクリプトです。`--apply` でそのまま 100 ファイルへ反映されます（旧
 `01_books` / `02_highlights` マスタは廃止済みで、別途 split を実行する必要はありません）。
 
 ---
@@ -77,7 +77,7 @@ cat book.json | py -3 -m scripts.add_manual_highlights --stdin
 
 ⚠️ 本メタデータ（`author` / `genre` / `rating` など）と `source` は **現在どこにも保存されません**。
 これらは廃止済みの `01_books` にしか保存先が無く、Notion は Title/Content/Page のみ、
-NotebookLM の 50 ファイルにも該当列がありません。ペイロードに含めてもエラーにはなりませんが、
+NotebookLM の 100 ファイルにも該当列がありません。ペイロードに含めてもエラーにはなりませんが、
 保存はされないので、基本は `title` と `highlights`（＋任意の `page`/`location`）に集中してください。
 
 ### ハイライトフィールド一覧
@@ -200,5 +200,5 @@ curl -s -u "$USER:$PASS" -H "Content-Type: application/json" \
 
 - **タイトルの表記を変えると `book_id` が変わり、別の本として登録されます。**  
   追加前に必ず `--list-books --title "..."`（または `GET /api/manual/books?title=...`）で既存の表記を確認してください。
-- 本メタデータ（著者・ジャンルなど）と `source` は現在どこにも保存されません（Notion は Title/Content/Page のみ、50 ファイルにも列がありません）。
-- `--sheets-only` の書き込み先は NotebookLM の 50 ファイルです。`NOTEBOOKLM_PARENT_FOLDER_ID`（50 ファイルを置いた Drive フォルダ ID）が未設定だとフォルダを特定できずエラーになります。50 ファイルのうち存在しないものは「書き込めなかった」として `problems` に出ます（サービスアカウントはファイルを新規作成できないため、初回のみ手動で空シートを作成）。
+- 本メタデータ（著者・ジャンルなど）と `source` は現在どこにも保存されません（Notion は Title/Content/Page のみ、100 ファイルにも列がありません）。
+- `--sheets-only` の書き込み先は NotebookLM の 100 ファイルです。`NOTEBOOKLM_PARENT_FOLDER_ID`（100 ファイルを置いた Drive フォルダ ID）が未設定だとフォルダを特定できずエラーになります。100 ファイルのうち存在しないものは「書き込めなかった」として `problems` に出ます（サービスアカウントはファイルを新規作成できないため、初回のみ手動で空シートを作成）。
