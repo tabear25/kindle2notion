@@ -16,9 +16,9 @@ Kindle Notebook のハイライトを取得し、Notion データベースへ保
   - 既定は **XHR 直接取得**（クリック巡回なし。従来比 5〜10 倍高速、うまく動かないときは自動でクリック方式にフォールバック）
 - **Amazon ログインセッションの再利用**: 一度ログインすれば以後の実行はログイン・2FA なしで数秒で取得開始
 - Notion データベースへ保存（重複スキップ付き。重複チェックは **Turso/SQLite キャッシュ** で毎回の全件取得を省略）
-- Google スプレッドシート（NotebookLM 用の 49 ボリューム＋索引＝固定 50 ファイル、`k2n_index` / `k2n_vol_*`）へ**取得と同時に自動反映**
+- Google スプレッドシート（NotebookLM 用の 99 ボリューム＋索引＝固定 100 ファイル、`k2n_index` / `k2n_vol_*`）へ**取得と同時に自動反映**
   - 旧マスタ（`01_books` / `02_highlights`）は退役。`--from-master` での再分割用に残置
-- 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`、同じ 50 ファイルへ反映）
+- 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`、同じ 100 ファイルへ反映）
 - Web UI フォーム・HTTP API・Cloud CLI からスマホや外出先で手動ハイライト追加
 - 実行履歴の記録（`GET /api/runs`）
 
@@ -82,10 +82,10 @@ AMAZON_PASSWORD=
 NOTION_API_KEY=
 NOTION_DATABASE_ID=
 
-# Google Sheets（NotebookLM 50 ファイル）を使う場合のみ設定
+# Google Sheets（NotebookLM 100 ファイル）を使う場合のみ設定
 GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE=
 GOOGLE_SHEETS_SPREADSHEET_ID=
-# 50 ファイルを置いた Drive フォルダ ID（推奨。旧マスタ廃止後はこれが主な参照先）
+# 100 ファイルを置いた Drive フォルダ ID（推奨。旧マスタ廃止後はこれが主な参照先）
 NOTEBOOKLM_PARENT_FOLDER_ID=
 
 # Web UI に Basic 認証を付けたい場合のみ設定
@@ -194,9 +194,9 @@ py -3 -m scripts.add_manual_highlights --list-books --title "タイトル"
 py -3 -m scripts.resync_notion_cache
 ```
 
-### NotebookLM 向け 50 ファイル (`split_per_book.py`)
+### NotebookLM 向け 100 ファイル (`split_per_book.py`)
 
-ハイライトは取得・手動追加と**同時に** NotebookLM 用の 49 ボリューム＋索引（計 50 ファイル）へ自動反映されます（`split_per_book.sync_notes_to_notebooklm`）。`config/KEYS.env` の `NOTEBOOKLM_PARENT_FOLDER_ID` に 50 ファイルを置いた Drive フォルダ ID を設定してください。50 ファイルはサービスアカウントでは作成できないため、初回のみ手動で空シートを作成します。  
+ハイライトは取得・手動追加と**同時に** NotebookLM 用の 99 ボリューム＋索引（計 100 ファイル）へ自動反映されます（`split_per_book.sync_notes_to_notebooklm`）。`config/KEYS.env` の `NOTEBOOKLM_PARENT_FOLDER_ID` に 100 ファイルを置いた Drive フォルダ ID を設定してください。100 ファイルはサービスアカウントでは作成できないため、初回のみ手動で空シートを作成します。  
 詳細: [`docs/NOTEBOOKLM_SETUP_TODO.md`](docs/NOTEBOOKLM_SETUP_TODO.md)
 
 ```bash
@@ -204,7 +204,7 @@ py -3 -m scripts.resync_notion_cache
 py -3 -m scripts.split_per_book --apply
 ```
 
-> 旧マスタ（`01_books` / `02_highlights`）は廃止済みです。`--from-master` は旧マスタから 50 ファイルを上書きする**レガシー専用**フラグで、最近のハイライトを失う恐れがあるため通常は使いません。`migrate_legacy_sheet.py` も同様に非推奨です。
+> 旧マスタ（`01_books` / `02_highlights`）は廃止済みです。`--from-master` は旧マスタから 100 ファイルを上書きする**レガシー専用**フラグで、最近のハイライトを失う恐れがあるため通常は使いません。`migrate_legacy_sheet.py` も同様に非推奨です。
 
 ## デプロイ
 

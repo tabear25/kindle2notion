@@ -1,17 +1,20 @@
 """Split master ``reading_note`` into fixed NotebookLM volume files.
 
-NotebookLM caps a notebook at 50 sources, so a "one Sheets file per book"
-layout breaks at the 51st book. This script instead writes a **fixed**
+NotebookLM caps a notebook at 100 sources, so a "one Sheets file per book"
+layout breaks at the 101st book. This script instead writes a **fixed**
 set of files regardless of how many books exist:
 
-- 49 *volume* files, each holding many books.
+- 99 *volume* files, each holding many books.
 - 1 *index* file mapping every book to the volume that contains it.
 
-Total = 50 files, forever. Each book is pinned to a volume by a stable
+Total = 100 files, forever. Each book is pinned to a volume by a stable
 hash of its ``book_id`` (see ``volume_for_book_id``), so re-runs never
 move a book between volumes and the operation is effectively append-only.
+(The layout was 49+1 = 50 files until 2026-07, when NotebookLM raised its
+source cap from 50 to 100; ``--redistribute`` below performed the one-time
+migration.)
 
-These 50 files are now the **single source of truth** for highlights. The
+These 100 files are now the **single source of truth** for highlights. The
 primary write path is :func:`sync_notes_to_notebooklm`, which merges scraped /
 manual notes directly into the volume + index files (called automatically after
 a Kindle scrape from ``main.py`` / ``web/pipeline.py`` and after a manual add
@@ -22,10 +25,11 @@ legacy ``--from-master`` CLI backfill below.
 CLI usage::
 
     python -m scripts.split_per_book                   # dry-run: rebuild index from volumes
-    python -m scripts.split_per_book --apply           # rebuild k2n_index from the 49 volumes
+    python -m scripts.split_per_book --apply           # rebuild k2n_index from the 99 volumes
+    python -m scripts.split_per_book --redistribute --apply  # one-time: re-shuffle every book after a VOLUME_COUNT change
     python -m scripts.split_per_book --from-master --apply  # LEGACY: re-split from the retired master
 
-Writes are paced (and retried on a per-minute 429) so a full 50-file ``--apply``
+Writes are paced (and retried on a per-minute 429) so a full 100-file ``--apply``
 completes in one run. If the destination folder's Drive parent cannot be
 auto-resolved (e.g. it sits in 'My Drive' root or inside a trashed folder), set
 the ``NOTEBOOKLM_PARENT_FOLDER_ID`` env var (or pass ``--parent-folder``) so the
@@ -42,8 +46,8 @@ Design notes:
   existing state from the volume itself -- never from the lossy index -- when
   merging in new highlights.
 - Filenames are fixed: ``<prefix>_index`` and ``<prefix>_vol_01`` ..
-  ``<prefix>_vol_49``.  Service Accounts cannot create Drive files, so the
-  user creates these 50 empty Sheets **once**; new books afterwards need
+  ``<prefix>_vol_99``.  Service Accounts cannot create Drive files, so the
+  user creates these 100 empty Sheets **once**; new books afterwards need
   no new files.
 - Each volume row is self-describing (``book_id`` + ``book_title`` on
   every row) so NotebookLM cannot mis-attribute a highlight when a single
@@ -114,17 +118,22 @@ def _authorize_sheets(creds):
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 
-# Fixed layout: 49 volume files + 1 index file = 50 NotebookLM sources.
-VOLUME_COUNT = 49
+# Fixed layout: 99 volume files + 1 index file = 100 NotebookLM sources.
+# Was 49 (+1 = 50) until 2026-07; changing this constant re-shuffles every
+# book, so any future change needs another ``--redistribute`` migration.
+VOLUME_COUNT = 99
 DEFAULT_SUBFOLDER_NAME = "notebooklm"
 DEFAULT_FILENAME_PREFIX = "k2n"
 
 # Google Sheets caps writes at ~60 requests/min/user. Each volume rewrite is
-# clear()+update() = 2 write requests, and a full run touches all 50 files
-# (~100 requests), so an unthrottled ``--apply`` reliably trips a 429 partway
+# clear()+update() = 2 write requests, and a full run touches all 100 files
+# (~200 requests), so an unthrottled ``--apply`` reliably trips a 429 partway
 # through and leaves the later volumes stale. Pace each write to stay under the
 # limit, and retry once the per-minute window resets (see ``_write_volume``).
+# Reads are cheaper but the read quota is per-minute too, so bulk reads
+# (``--redistribute`` harvests every volume) are paced as well.
 WRITE_THROTTLE_SECONDS = 2.5
+READ_THROTTLE_SECONDS = 1.0
 QUOTA_RETRY_WAIT_SECONDS = 60
 MAX_QUOTA_RETRIES = 5
 
@@ -163,8 +172,8 @@ def volume_for_book_id(book_id: str, volume_count: int = VOLUME_COUNT) -> int:
 
     Deterministic across machines and re-runs: ``SHA1(book_id) % N + 1``.
     This formula is load-bearing -- once books have been written, changing
-    it (or ``VOLUME_COUNT``) re-shuffles every book and forces a full
-    NotebookLM re-import.
+    it (or ``VOLUME_COUNT``) re-shuffles every book, requires the one-time
+    ``--redistribute`` migration, and forces a full NotebookLM re-import.
     """
     digest = hashlib.sha1((book_id or "").strip().encode("utf-8")).hexdigest()
     return int(digest, 16) % volume_count + 1
@@ -446,6 +455,65 @@ def merge_summaries(summaries) -> dict:
     return out
 
 
+def plan_redistribution(
+    highlights_by_book: dict[str, list[dict]],
+    titles_by_book: dict[str, str],
+    last_synced_by_book: dict[str, str] | None = None,
+    *,
+    prefix: str = DEFAULT_FILENAME_PREFIX,
+    volume_count: int = VOLUME_COUNT,
+) -> list[tuple[str, list[list[str]], str]]:
+    """Re-bucket every harvested book into the ``volume_count`` layout.
+
+    Pure planning step of the one-time ``--redistribute`` migration (run after
+    a ``VOLUME_COUNT`` change): takes the highlights harvested from the *old*
+    volume files and produces the full replacement content for every file of
+    the *new* layout. Highlight rows are copied verbatim -- ``highlight_id``
+    hashes the *book* id and is numbered per book, so redistribution moves
+    rows between files without renumbering anything (ids and dedup keys are
+    stable across the migration).
+
+    Returns ``(filename, rows, label)`` targets for all ``volume_count``
+    volumes **first** and the index **last** (the index is derived data, so it
+    is written after the volumes it describes). Empty volumes get a
+    header-only sheet so every file of the layout stays well-formed.
+    """
+    last_synced_by_book = last_synced_by_book or {}
+    books = [
+        {
+            "book_id": bid,
+            "title": titles_by_book.get(bid, ""),
+            "highlight_count": str(len(hls)),
+            "last_synced_at": last_synced_by_book.get(bid, ""),
+        }
+        for bid, hls in highlights_by_book.items()
+    ]
+    books_by_volume = group_books_by_volume(books, volume_count)
+
+    targets: list[tuple[str, list[list[str]], str]] = []
+    for v in range(1, volume_count + 1):
+        vbooks = books_by_volume[v]
+        nhl = sum(
+            len(highlights_by_book.get((b.get("book_id") or "").strip(), []))
+            for b in vbooks
+        )
+        targets.append(
+            (
+                volume_filename(prefix, v),
+                volume_rows(vbooks, highlights_by_book),
+                f"{len(vbooks)} books, {nhl} highlights",
+            )
+        )
+    targets.append(
+        (
+            index_filename(prefix),
+            index_rows(books, highlights_by_book, prefix, volume_count),
+            f"{len(books)} books",
+        )
+    )
+    return targets
+
+
 # ---------------------------------------------------------------------------
 # Sheets / Drive client
 # ---------------------------------------------------------------------------
@@ -607,7 +675,7 @@ def _write_volume(gc, file_id: str, header_and_rows: list[list[str]]) -> None:
     """Replace sheet 1 of ``file_id`` with the supplied rows.
 
     Paces each write and retries on a per-minute write-quota error (HTTP 429)
-    so a full 50-file ``--apply`` completes in one run instead of dying partway
+    so a full 100-file ``--apply`` completes in one run instead of dying partway
     through and leaving the later volumes stale.
     """
     sh = gc.open_by_key(file_id)
@@ -639,6 +707,35 @@ def _read_volume(gc, file_id: str) -> list[list[str]]:
     return gc.open_by_key(file_id).sheet1.get_all_values()
 
 
+def _read_volume_throttled(gc, file_id: str) -> list[list[str]]:
+    """`_read_volume` paced + retried for bulk reads.
+
+    ``--redistribute`` reads every volume back-to-back; ~100 unthrottled reads
+    can trip the per-minute read quota, so pace each read and retry on a 429
+    the same way ``_write_volume`` does.
+    """
+    rows: list[list[str]] = []
+    for attempt in range(MAX_QUOTA_RETRIES + 1):
+        try:
+            rows = _read_volume(gc, file_id)
+            break
+        except APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 and attempt < MAX_QUOTA_RETRIES:
+                print(
+                    f"  [quota] read-rate limit (429); waiting "
+                    f"{QUOTA_RETRY_WAIT_SECONDS}s then retrying "
+                    f"({attempt + 1}/{MAX_QUOTA_RETRIES})...",
+                    flush=True,
+                )
+                time.sleep(QUOTA_RETRY_WAIT_SECONDS)
+                continue
+            raise
+    if READ_THROTTLE_SECONDS:
+        time.sleep(READ_THROTTLE_SECONDS)
+    return rows
+
+
 def _resolve_notebooklm_folder(
     drive,
     *,
@@ -646,17 +743,17 @@ def _resolve_notebooklm_folder(
     parent_folder_id: str | None = None,
     folder: str = DEFAULT_SUBFOLDER_NAME,
 ):
-    """Resolve the folder that holds the 50 files + the spreadsheets in it.
+    """Resolve the folder that holds the 100 files + the spreadsheets in it.
 
     Resolution order for the configured folder: explicit ``parent_folder_id`` ->
     ``NOTEBOOKLM_PARENT_FOLDER_ID`` env var -> the (legacy) master spreadsheet's
     own Drive parent, only when ``spreadsheet_id`` is supplied.
 
     The configured folder may be **either** the parent that contains a ``folder``
-    subfolder (e.g. ``notebooklm/``) **or** the folder that holds the 50 files
+    subfolder (e.g. ``notebooklm/``) **or** the folder that holds the 100 files
     *directly*. We first look for a ``folder`` subfolder; if there isn't one, we
     use the configured folder itself. So ``NOTEBOOKLM_PARENT_FOLDER_ID`` can point
-    straight at the folder containing the 50 files (the intuitive setting).
+    straight at the folder containing the 100 files (the intuitive setting).
 
     Returns ``(sub_id, {filename: file_id})``.
     """
@@ -673,12 +770,12 @@ def _resolve_notebooklm_folder(
         raise SystemExit(
             "Cannot locate the NotebookLM destination folder. Set "
             f"{PARENT_FOLDER_ENV_VAR} in config/KEYS.env to the Drive folder ID "
-            "that holds the 50 files (or its parent)."
+            "that holds the 100 files (or its parent)."
         )
     sub_id = _find_or_create_subfolder(drive, parent_id, folder, dry_run=True)
     if sub_id is None:
         # No ``folder`` subfolder -> the configured folder IS the destination
-        # (the 50 files live directly in it). Use it as-is.
+        # (the 100 files live directly in it). Use it as-is.
         sub_id = parent_id
     existing = _list_spreadsheets_in_folder(drive, sub_id)
     return sub_id, existing
@@ -693,7 +790,7 @@ def sync_notes_to_notebooklm(
     folder: str = DEFAULT_SUBFOLDER_NAME,
     parent_folder_id: str | None = None,
 ) -> dict:
-    """Merge scraped / manual notes directly into the NotebookLM 50-file layout.
+    """Merge scraped / manual notes directly into the NotebookLM 100-file layout.
 
     This is the source-of-truth writer that replaced the retired ``01_books`` /
     ``02_highlights`` master. For each volume the incoming notes touch (a book is
@@ -889,7 +986,7 @@ def list_books_from_index(
 
 
 def _rebuild_index_from_volumes(gc, existing: dict, prefix: str) -> list[list[str]]:
-    """Rebuild the index rows from the 49 volume files (volumes = source of truth).
+    """Rebuild the index rows from the 99 volume files (volumes = source of truth).
 
     Volumes are self-describing, so the full catalogue (book_id, title,
     highlight_count) is recoverable without the retired master. ``last_synced_at``
@@ -918,7 +1015,7 @@ def _rebuild_index_from_volumes(gc, existing: dict, prefix: str) -> list[list[st
 
 
 def _cli_from_master(gc, existing: dict, repo_main, args) -> int:
-    """LEGACY: re-split all 50 files from the retired master. OVERWRITES everything.
+    """LEGACY: re-split all 100 files from the retired master. OVERWRITES everything.
 
     Highlights now flow into the volumes directly via
     :func:`sync_notes_to_notebooklm`, so the master is normally never read. This
@@ -927,7 +1024,7 @@ def _cli_from_master(gc, existing: dict, repo_main, args) -> int:
     """
     print(
         "\n[WARNING] --from-master reads the RETIRED 01_books/02_highlights master "
-        "and OVERWRITES all 50 NotebookLM files with it. Any highlights added to the "
+        "and OVERWRITES all 100 NotebookLM files with it. Any highlights added to the "
         "volumes after the master was last updated will be LOST. Use only for a "
         "one-time backfill.\n",
         flush=True,
@@ -1005,7 +1102,7 @@ def _cli_from_master(gc, existing: dict, repo_main, args) -> int:
 
 
 def _cli_rebuild_index(gc, existing: dict, args) -> int:
-    """Default CLI mode: rebuild ``<prefix>_index`` from the 49 volume files.
+    """Default CLI mode: rebuild ``<prefix>_index`` from the 99 volume files.
 
     Safe -- it never reads the retired master and never overwrites a volume; it
     only regenerates the index catalogue from the volumes (the source of truth).
@@ -1032,6 +1129,217 @@ def _cli_rebuild_index(gc, existing: dict, args) -> int:
     else:
         print(f"  [update ] {index_fname}  ({book_count} books)")
         print("\n(dry-run) re-run with --apply to rewrite the index file.")
+    return 0
+
+
+def _harvest_all_volumes(gc, existing: dict, prefix: str):
+    """Read every ``<prefix>_vol_NN`` file present and collect its highlights.
+
+    Harvests whatever volume files exist (matching ``<prefix>_vol_<digits>``),
+    so it works both on the old 49-file layout and after the new empty volumes
+    have been pre-created (empty files simply contribute zero rows). All reads
+    happen before ``--redistribute`` writes anything.
+
+    Returns ``(highlights_by_book, titles_by_book, source_file_by_book,
+    per_file_counts)`` -- the third maps each book to the file it was read
+    from (for "moves" reporting), the fourth is ``[(filename, n_highlights)]``.
+    """
+    pattern = re.compile(rf"^{re.escape(prefix)}_vol_\d+$")
+    highlights_by_book: dict[str, list[dict]] = {}
+    titles_by_book: dict[str, str] = {}
+    source_file_by_book: dict[str, str] = {}
+    per_file_counts: list[tuple[str, int]] = []
+    for fname in sorted(f for f in existing if pattern.match(f)):
+        count = 0
+        for raw in _strip_header(_read_volume_throttled(gc, existing[fname]), VOLUME_HEADERS):
+            hl = _volume_row_to_highlight(raw)
+            bid = hl["book_id"]
+            if not bid or not hl["content"]:
+                continue
+            highlights_by_book.setdefault(bid, []).append(hl)
+            if hl["book_title"] and bid not in titles_by_book:
+                titles_by_book[bid] = hl["book_title"]
+            source_file_by_book.setdefault(bid, fname)
+            count += 1
+        per_file_counts.append((fname, count))
+    return highlights_by_book, titles_by_book, source_file_by_book, per_file_counts
+
+
+def _load_index_last_synced(gc, existing: dict, prefix: str) -> dict[str, str]:
+    """``{book_id: last_synced_at}`` from the current index (volumes don't store it)."""
+    index_id = existing.get(index_filename(prefix))
+    out: dict[str, str] = {}
+    if not index_id:
+        return out
+    for raw in _strip_header(_read_volume_throttled(gc, index_id), INDEX_HEADERS):
+        book = _index_row_to_book(raw)
+        if book["book_id"]:
+            out[book["book_id"]] = book["last_synced_at"]
+    return out
+
+
+def _dump_redistribute_backup(
+    path: Path,
+    highlights_by_book: dict,
+    titles_by_book: dict,
+    last_synced_by_book: dict,
+) -> None:
+    """Write the harvested state to a local JSON file before the first write.
+
+    ``--redistribute --apply`` clears and rewrites every volume; if the run is
+    interrupted after a book's old volume was rewritten but before its new one,
+    that book's highlights exist only in memory. The backup makes the run
+    resumable: ``--from-backup <file> --apply`` re-plans from this JSON without
+    re-harvesting the (now partially rewritten) volumes.
+    """
+    payload = {
+        "created_at": today_iso(),
+        "volume_count": VOLUME_COUNT,
+        "highlights_by_book": highlights_by_book,
+        "titles_by_book": titles_by_book,
+        "last_synced_by_book": last_synced_by_book,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _load_redistribute_backup(path: Path):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return (
+        payload["highlights_by_book"],
+        payload.get("titles_by_book", {}),
+        payload.get("last_synced_by_book", {}),
+    )
+
+
+def _cli_redistribute(gc, existing: dict, args) -> int:
+    """One-time migration: re-shuffle every book after a ``VOLUME_COUNT`` change.
+
+    Safety flow: (1) abort before any read/write unless ALL target files
+    already exist (a partial run would silently drop the books whose target
+    file is missing); (2) read every old volume before writing anything;
+    (3) on ``--apply``, dump a local JSON backup before the first write and
+    write the volumes first, the (derived) index last. Dry-run by default.
+    ``highlight_id`` values are copied verbatim -- ids, per-book numbering and
+    dedup keys all survive the move (see :func:`plan_redistribution`).
+    """
+    print(
+        "[mode] redistribute: re-shuffle every book into the "
+        f"{VOLUME_COUNT}+1 = {VOLUME_COUNT + 1}-file layout"
+    )
+
+    expected = all_target_filenames(args.prefix)
+    missing = [f for f in expected if f not in existing]
+    if missing:
+        print(
+            f"\n{len(missing)} of the {len(expected)} target file(s) are not yet in "
+            f"the '{args.folder}' folder. Redistribution needs ALL of them up front "
+            "(books whose target file is missing would be dropped), so nothing was "
+            "read or written. Create them ONCE, manually, as Google Sheets with "
+            "these EXACT names (no extension) -- service accounts cannot create "
+            "Drive files:"
+        )
+        for f in missing:
+            print(f"  - {f}")
+        print("\nThen re-run this command.")
+        return 1
+
+    index_fname = index_filename(args.prefix)
+    if args.from_backup:
+        backup_path = Path(args.from_backup)
+        if not backup_path.is_file():
+            print(f"[error] backup file not found: {backup_path}")
+            return 1
+        highlights_by_book, titles_by_book, last_synced = _load_redistribute_backup(backup_path)
+        source_file_by_book: dict[str, str] = {}
+        print(f"[backup] loaded harvested state from {backup_path} (volumes NOT re-read)")
+    else:
+        volume_files = [f for f in existing if re.match(rf"^{re.escape(args.prefix)}_vol_\d+$", f)]
+        print(
+            f"[harvest] reading {len(volume_files)} volume files "
+            f"(paced; ~{len(volume_files) * READ_THROTTLE_SECONDS:.0f}s)..."
+        )
+        highlights_by_book, titles_by_book, source_file_by_book, per_file = (
+            _harvest_all_volumes(gc, existing, args.prefix)
+        )
+        for fname, count in per_file:
+            if count:
+                print(f"  [read   ] {fname}  ({count} highlights)")
+        last_synced = _load_index_last_synced(gc, existing, args.prefix)
+
+    total_highlights = sum(len(v) for v in highlights_by_book.values())
+    print(f"[harvest] {len(highlights_by_book)} books, {total_highlights} highlights")
+
+    targets = plan_redistribution(
+        highlights_by_book,
+        titles_by_book,
+        last_synced,
+        prefix=args.prefix,
+        volume_count=VOLUME_COUNT,
+    )
+
+    # Invariant: every harvested highlight is planned into exactly one volume.
+    planned_highlights = sum(
+        len(rows) - 1 for fname, rows, _ in targets if fname != index_fname
+    )
+    if planned_highlights != total_highlights:
+        print(
+            f"[error] planned rows ({planned_highlights}) != harvested highlights "
+            f"({total_highlights}); aborting without writing."
+        )
+        return 1
+
+    moves = sum(
+        1
+        for bid, src in source_file_by_book.items()
+        if src != volume_filename(args.prefix, volume_for_book_id(bid))
+    )
+    if source_file_by_book:
+        print(f"[plan] {moves} of {len(source_file_by_book)} books move to a different file")
+
+    books_per_volume = {v: 0 for v in range(1, VOLUME_COUNT + 1)}
+    for bid in highlights_by_book:
+        books_per_volume[volume_for_book_id(bid)] += 1
+    counts = list(books_per_volume.values())
+    non_empty = sum(1 for c in counts if c)
+    print(
+        f"[distribution] books per volume -- min={min(counts)} "
+        f"median={statistics.median(counts):g} max={max(counts)}; "
+        f"{non_empty} of {VOLUME_COUNT} volumes non-empty"
+    )
+
+    if args.apply and not args.from_backup:
+        backup_path = (
+            Path(__file__).resolve().parents[1]
+            / "backups"
+            / f"redistribute-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        )
+        _dump_redistribute_backup(backup_path, highlights_by_book, titles_by_book, last_synced)
+        print(f"[backup] harvested state saved to {backup_path}")
+        print(
+            "         (if this run is interrupted, resume with "
+            f"--redistribute --from-backup {backup_path} --apply)"
+        )
+
+    if args.apply:
+        print(
+            f"[write] rewriting all {len(targets)} files "
+            f"(paced; ~{len(targets) * WRITE_THROTTLE_SECONDS / 60:.0f} min)..."
+        )
+    for fname, rows, label in targets:
+        if args.apply:
+            _write_volume(gc, existing[fname], rows)
+            print(f"  [update ] {fname}  ({label})  id={existing[fname]}")
+        elif len(rows) > 1 or fname == index_fname:
+            print(f"  [update ] {fname}  ({label})")
+
+    if not args.apply:
+        empty = sum(1 for fname, rows, _ in targets if len(rows) <= 1 and fname != index_fname)
+        if empty:
+            print(f"  (+ {empty} empty volumes, header row only)")
+        print("\n(dry-run) re-run with --apply to rewrite all files.")
+    else:
+        print(f"\n[done] {len(targets)} files rewritten. Re-import the sources in NotebookLM.")
     return 0
 
 
@@ -1082,15 +1390,41 @@ def main_cli() -> int:
         "--from-master",
         action="store_true",
         help=(
-            "LEGACY: re-split all 50 files from the retired 01_books/02_highlights "
+            "LEGACY: re-split all 100 files from the retired 01_books/02_highlights "
             "master. Highlights now flow into the volumes directly (via "
             "sync_notes_to_notebooklm), so the master is normally NOT read. Only use "
-            "this for a one-time backfill -- it OVERWRITES all 50 files and clobbers "
+            "this for a one-time backfill -- it OVERWRITES all 100 files and clobbers "
             "any highlights added after the master was last updated. Without this "
             "flag the default action rebuilds only the index from the volumes."
         ),
     )
+    parser.add_argument(
+        "--redistribute",
+        action="store_true",
+        help=(
+            "ONE-TIME migration after a VOLUME_COUNT change: read every existing "
+            "volume file, re-bucket all books with the current "
+            "volume_for_book_id formula, and rewrite all files + the index. "
+            "Aborts before any read/write unless every target file already "
+            "exists. Dry-run by default; combine with --apply to write. "
+            "NotebookLM sources must be re-imported afterwards."
+        ),
+    )
+    parser.add_argument(
+        "--from-backup",
+        metavar="FILE",
+        default=None,
+        help=(
+            "resume an interrupted --redistribute --apply from the JSON backup "
+            "it wrote (skips re-harvesting the partially rewritten volumes). "
+            "Implies --redistribute."
+        ),
+    )
     args = parser.parse_args()
+    if args.from_backup:
+        args.redistribute = True
+    if args.from_master and args.redistribute:
+        parser.error("--from-master and --redistribute are mutually exclusive")
 
     repo_main.load_config()
     if not repo_main.GOOGLE_SHEETS_ENABLED:
@@ -1105,7 +1439,7 @@ def main_cli() -> int:
 
     # Resolve the destination folder (same logic + fallback as the sync path:
     # the configured folder may be the parent of a `notebooklm/` subfolder, or
-    # the folder that holds the 50 files directly).
+    # the folder that holds the 100 files directly).
     sub_id, existing = _resolve_notebooklm_folder(
         drive,
         spreadsheet_id=repo_main.GOOGLE_SHEETS_SPREADSHEET_ID,
@@ -1114,6 +1448,8 @@ def main_cli() -> int:
     )
     print(f"[folder] destination folder id = {sub_id}  ({len(existing)} spreadsheets present)")
 
+    if args.redistribute:
+        return _cli_redistribute(gc, existing, args)
     if args.from_master:
         return _cli_from_master(gc, existing, repo_main, args)
     return _cli_rebuild_index(gc, existing, args)

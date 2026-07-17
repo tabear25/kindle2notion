@@ -16,7 +16,7 @@ The user reads books that are not on Amazon Kindle (paper books, PDFs, library
 loans, other e-book stores). Their highlights cannot be scraped, so collect them
 in conversation and write them into the **same** Notion database + the same
 NotebookLM Google Sheets layout the Kindle sync uses. The output is
-indistinguishable from scraped highlights. The write goes **straight into the 50
+indistinguishable from scraped highlights. The write goes **straight into the 100
 NotebookLM files** (`split_per_book.sync_notes_to_notebooklm`) — there is no
 separate "run the split" step anymore (see Step 6).
 
@@ -65,7 +65,7 @@ Required:
 Optional book metadata — ⚠️ **currently NOT persisted anywhere**. These fields
 (`author` 著者 / `genre` / `reading_status` / `finished_at` / `rating` /
 `amazon_asin` / `cover_url` / `notion_url`) and the `source` label used to live on
-the retired `01_books` master; the NotebookLM 50-file layout has no columns for
+the retired `01_books` master; the NotebookLM 100-file layout has no columns for
 them and Notion stores only Title/Content/Page. The payload still *accepts* them
 (harmless), but they will not be saved. So don't go out of your way to collect
 metadata — focus on the title + highlights (+ optional page/location). Mention to
@@ -189,7 +189,7 @@ Optional flags: `--notion-only` / `--sheets-only` to target one destination.
 ## Step 6 — (No manual split needed — propagation is automatic)
 
 **This step no longer requires any action.** `add_manual_highlights --apply`
-writes **directly** into the 50 NotebookLM files via
+writes **directly** into the 100 NotebookLM files via
 `split_per_book.sync_notes_to_notebooklm`: the new highlights land in their
 pinned volume(s) and the index is refreshed in the **same run** as Step 5. There
 is no separate `split_per_book --apply` to run, and there is no `01_books` /
@@ -200,7 +200,7 @@ What this means in practice:
   the NotebookLM files. If Google Sheets is not configured, only Notion is
   updated (relay that).
 - **Folder location**: the user must have `NOTEBOOKLM_PARENT_FOLDER_ID` set in
-  `config/KEYS.env` — the Drive folder ID that **holds the 50 files** (or a parent
+  `config/KEYS.env` — the Drive folder ID that **holds the 100 files** (or a parent
   containing a `notebooklm/` subfolder; both work) so the sync can find them. If
   it's unset and the fallback can't resolve the folder, the run errors — relay
   that and ask the user to set it.
@@ -211,7 +211,7 @@ What this means in practice:
   empty Google Sheets with those exact names), then re-run.
 - `py -m scripts.split_per_book --apply` still exists but now only **rebuilds the
   index from the volumes** (a safe recovery tool). You normally never need it.
-  Never use `--from-master` here — it overwrites all 50 files from the retired
+  Never use `--from-master` here — it overwrites all 100 files from the retired
   master and would clobber recent highlights.
 
 ## Step 7 — Clean up
@@ -229,7 +229,7 @@ git-ignored but leaving it around is untidy). Confirm to the user what was added
   files have no metadata/source columns. Don't promise the user these are saved.
 - This never runs the Kindle scraper and never touches `storage_state.json`.
 - `NOTEBOOKLM_PARENT_FOLDER_ID` must point at the live Drive folder that **holds
-  the 50 files** (or a parent with a `notebooklm/` subfolder — both work). The
+  the 100 files** (or a parent with a `notebooklm/` subfolder — both work). The
   retired master spreadsheet should NOT be relied on for folder resolution (it
   may be trashed).
 
@@ -238,7 +238,7 @@ git-ignored but leaving it around is untidy). Confirm to the user what was added
 Use this when you are in a **claude.ai/code cloud session** connected to this
 repo (typical "from my phone" case). It is just **Local mode with `python`**, so
 Steps 1–7 above apply verbatim — only the launcher changes (`py` → `python`).
-The `--apply` in Step 5 writes straight into the 50 NotebookLM files (no separate
+The `--apply` in Step 5 writes straight into the 100 NotebookLM files (no separate
 split step — see Step 6); set `NOTEBOOKLM_PARENT_FOLDER_ID` as a cloud env var so
 the sync can locate the `notebooklm/` folder.
 
@@ -352,7 +352,7 @@ curl -s -u "$USER:$PASS" -H "Content-Type: application/json" \
 
 The `sheets` summary comes from the NotebookLM sync (`sync_notes_to_notebooklm`):
 `touched_volumes` is how many volume files were rewritten, and `missing_files`
-lists any of the 50 files that don't exist yet (those highlights were NOT written).
+lists any of the 100 files that don't exist yet (those highlights were NOT written).
 
 **Always check `ok`, not just the HTTP status** — a partial write failure still
 returns HTTP 200 with `"ok": false` and a populated `problems` array (a missing
