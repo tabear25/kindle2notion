@@ -29,11 +29,13 @@ CLI usage::
     python -m scripts.split_per_book --redistribute --apply  # one-time: re-shuffle every book after a VOLUME_COUNT change
     python -m scripts.split_per_book --from-master --apply  # LEGACY: re-split from the retired master
 
-Writes are paced (and retried on a per-minute 429) so a full 100-file ``--apply``
-completes in one run. If the destination folder's Drive parent cannot be
-auto-resolved (e.g. it sits in 'My Drive' root or inside a trashed folder), set
-the ``NOTEBOOKLM_PARENT_FOLDER_ID`` env var (or pass ``--parent-folder``) so the
-destination folder is found without it.
+Every Sheets call -- read *and* write -- is paced against the per-minute quota
+and retried on a 429, so both a full 100-file ``--apply`` and a sync touching
+many volumes at once complete in one run (slower, never failed). There is no
+need to split a large add into several runs. If the destination folder's Drive
+parent cannot be auto-resolved (e.g. it sits in 'My Drive' root or inside a
+trashed folder), set the ``NOTEBOOKLM_PARENT_FOLDER_ID`` env var (or pass
+``--parent-folder``) so the destination folder is found without it.
 
 Design notes:
 
@@ -64,6 +66,7 @@ import re
 import statistics
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 # Make the project root importable when run as ``python scripts/...``.
@@ -125,17 +128,40 @@ VOLUME_COUNT = 99
 DEFAULT_SUBFOLDER_NAME = "notebooklm"
 DEFAULT_FILENAME_PREFIX = "k2n"
 
-# Google Sheets caps writes at ~60 requests/min/user. Each volume rewrite is
-# clear()+update() = 2 write requests, and a full run touches all 100 files
-# (~200 requests), so an unthrottled ``--apply`` reliably trips a 429 partway
-# through and leaves the later volumes stale. Pace each write to stay under the
-# limit, and retry once the per-minute window resets (see ``_write_volume``).
-# Reads are cheaper but the read quota is per-minute too, so bulk reads
-# (``--redistribute`` harvests every volume) are paced as well.
-WRITE_THROTTLE_SECONDS = 2.5
-READ_THROTTLE_SECONDS = 1.0
+# Google Sheets enforces separate per-minute, per-user quotas for reads and
+# writes (60 each for a service account). Both are easy to trip, because a single
+# "read one volume" costs more than one request: gspread's ``open_by_key`` and
+# ``Spreadsheet.sheet1`` each fetch spreadsheet metadata, so opening a file is 2
+# read requests, reading its rows is 1 more, and rewriting it is 2 write
+# requests. A sync touching ~12 volumes therefore issued ~60 read requests in a
+# burst and died on a 429 (this happened on 2026-07-25: the volume files were
+# written but the index refresh never ran, leaving the catalogue stale).
+#
+# Three mechanisms keep that from recurring:
+# 1. ``_RateLimiter`` -- a sliding 60s window per quota bucket. It counts actual
+#    *requests* (not calls) and blocks just long enough to stay under the cap, so
+#    a run touching many volumes paces itself instead of failing. This replaces
+#    the old fixed per-call sleeps, which could not know how many requests a call
+#    would cost and so throttled the wrong quantity.
+# 2. ``_open_worksheet`` caches the opened worksheet per file for the duration of
+#    a run, so a volume that is read *and* rewritten pays the 2 metadata reads
+#    once instead of twice (5 read requests per volume -> 3).
+# 3. ``_with_quota_retry`` retries a 429 after the window resets, as a safety net
+#    for quota consumed outside this process (e.g. a concurrent run).
+#
+# The caps are set below Google's 60 to leave headroom for the Drive calls and
+# for anything else using the same service account.
+READ_QUOTA_PER_MINUTE = 50
+WRITE_QUOTA_PER_MINUTE = 50
+QUOTA_WINDOW_SECONDS = 60.0
 QUOTA_RETRY_WAIT_SECONDS = 60
 MAX_QUOTA_RETRIES = 5
+
+# Request cost of the helpers below. Used both for quota accounting and for the
+# wall-clock estimates the CLI prints before a long run.
+OPEN_READ_REQUESTS = 2  # open_by_key metadata + sheet1 metadata
+VALUES_READ_REQUESTS = 1  # get_all_values
+VOLUME_WRITE_REQUESTS = 2  # clear + update
 
 # Env var naming the Drive folder that hosts the ``notebooklm`` subfolder. Set
 # this when the master spreadsheet's own parent cannot be auto-resolved (e.g.
@@ -667,73 +693,192 @@ def _load_master(gc, spreadsheet_id: str) -> tuple[list[dict], list[dict]]:
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Sheets API access (quota-aware)
 # ---------------------------------------------------------------------------
+
+
+class _RateLimiter:
+    """Sliding-window limiter for one Google Sheets quota bucket.
+
+    Google counts requests over a rolling minute, so a fixed sleep between calls
+    is the wrong control: it is either too slow (wasted wall-clock on a small
+    run) or too fast (a 429 on a big one), and it cannot know that one call costs
+    several requests. This records the timestamp of every request and blocks only
+    when the last ``limit`` requests all fall inside the window.
+
+    Deliberately not thread-safe: the sync runs on a single worker thread, and
+    ``_with_quota_retry`` covers the rare cross-process case.
+    """
+
+    def __init__(
+        self,
+        limit: int,
+        window_seconds: float = QUOTA_WINDOW_SECONDS,
+        label: str = "",
+    ):
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self.label = label
+        self._times: deque = deque()
+
+    def acquire(self, requests: int = 1) -> float:
+        """Reserve ``requests`` slots, sleeping if the window is full.
+
+        Returns the total seconds spent waiting (``0.0`` when the window had
+        room), which makes the pacing observable to the tests.
+        """
+        return sum(self._acquire_one() for _ in range(max(requests, 1)))
+
+    def _acquire_one(self) -> float:
+        self._evict(time.monotonic())
+        waited = 0.0
+        if self.limit > 0 and len(self._times) >= self.limit:
+            wait = self.window_seconds - (time.monotonic() - self._times[0])
+            if wait > 0:
+                print(
+                    f"  [quota] {self.label} limit reached "
+                    f"({self.limit}/{self.window_seconds:.0f}s); "
+                    f"waiting {wait:.0f}s...",
+                    flush=True,
+                )
+                time.sleep(wait)
+                waited = wait
+            self._evict(time.monotonic())
+        self._times.append(time.monotonic())
+        return waited
+
+    def _evict(self, now: float) -> None:
+        while self._times and now - self._times[0] >= self.window_seconds:
+            self._times.popleft()
+
+
+_READ_LIMITER = _RateLimiter(READ_QUOTA_PER_MINUTE, label="read")
+_WRITE_LIMITER = _RateLimiter(WRITE_QUOTA_PER_MINUTE, label="write")
+
+# Opened worksheets keyed by Drive file id, for the duration of one run (see
+# mechanism 2 in the quota comment near the top). Cleared at the start of every
+# sync / CLI run so a long-lived process (the Flask worker) never reuses a stale
+# handle.
+_WORKSHEET_CACHE: dict = {}
+
+
+def _reset_api_state() -> None:
+    """Drop cached worksheet handles. Call once at the start of a run."""
+    _WORKSHEET_CACHE.clear()
+
+
+def _quota_eta_seconds(read_requests: int = 0, write_requests: int = 0) -> float:
+    """Rough wall-clock for a batch of requests, given the per-minute quotas.
+
+    Reads and writes are separate buckets, so the slower of the two dominates.
+    """
+    read_windows = read_requests / READ_QUOTA_PER_MINUTE if READ_QUOTA_PER_MINUTE else 0.0
+    write_windows = (
+        write_requests / WRITE_QUOTA_PER_MINUTE if WRITE_QUOTA_PER_MINUTE else 0.0
+    )
+    return max(read_windows, write_windows) * QUOTA_WINDOW_SECONDS
+
+
+def _format_eta(seconds: float) -> str:
+    """Human-readable ETA (``~40s`` / ``~3 min``) for the CLI's progress lines."""
+    if seconds < 90:
+        return f"~{seconds:.0f}s"
+    return f"~{seconds / 60:.0f} min"
+
+
+def _with_quota_retry(action, *, limiter: _RateLimiter, requests: int, what: str):
+    """Reserve quota, run ``action``, and retry a 429 once the window resets.
+
+    The limiter should make a 429 unreachable for a single run; this stays as the
+    safety net for quota consumed by something else on the same service account
+    (a concurrent sync, a one-off script).
+    """
+    for attempt in range(MAX_QUOTA_RETRIES + 1):
+        limiter.acquire(requests)
+        try:
+            return action()
+        except APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 and attempt < MAX_QUOTA_RETRIES:
+                print(
+                    f"  [quota] 429 on {what}; waiting {QUOTA_RETRY_WAIT_SECONDS}s "
+                    f"then retrying ({attempt + 1}/{MAX_QUOTA_RETRIES})...",
+                    flush=True,
+                )
+                time.sleep(QUOTA_RETRY_WAIT_SECONDS)
+                continue
+            raise
+
+
+def _open_worksheet(gc, file_id: str):
+    """Open sheet 1 of ``file_id``, reusing the handle for the rest of the run.
+
+    ``open_by_key`` and ``.sheet1`` each fetch spreadsheet metadata, so opening a
+    file costs ``OPEN_READ_REQUESTS`` read requests. Caching the handle is what
+    makes reading *and* rewriting one volume cost 3 read requests instead of 5.
+    """
+    ws = _WORKSHEET_CACHE.get(file_id)
+    if ws is None:
+        ws = _with_quota_retry(
+            lambda: gc.open_by_key(file_id).sheet1,
+            limiter=_READ_LIMITER,
+            requests=OPEN_READ_REQUESTS,
+            what=f"open {file_id}",
+        )
+        _WORKSHEET_CACHE[file_id] = ws
+    return ws
 
 
 def _write_volume(gc, file_id: str, header_and_rows: list[list[str]]) -> None:
     """Replace sheet 1 of ``file_id`` with the supplied rows.
 
-    Paces each write and retries on a per-minute write-quota error (HTTP 429)
-    so a full 100-file ``--apply`` completes in one run instead of dying partway
-    through and leaving the later volumes stale.
+    Quota-paced and 429-retried, so a run rewriting many files completes in one
+    go instead of dying partway through and leaving the later volumes stale.
     """
-    sh = gc.open_by_key(file_id)
-    ws = sh.sheet1
-    for attempt in range(MAX_QUOTA_RETRIES + 1):
-        try:
-            ws.clear()
-            if header_and_rows:
-                ws.update("A1", header_and_rows, value_input_option="RAW")
-            break
-        except APIError as e:
-            status = getattr(getattr(e, "response", None), "status_code", None)
-            if status == 429 and attempt < MAX_QUOTA_RETRIES:
-                print(
-                    f"  [quota] write-rate limit (429); waiting "
-                    f"{QUOTA_RETRY_WAIT_SECONDS}s then retrying "
-                    f"({attempt + 1}/{MAX_QUOTA_RETRIES})...",
-                    flush=True,
-                )
-                time.sleep(QUOTA_RETRY_WAIT_SECONDS)
-                continue
-            raise
-    if WRITE_THROTTLE_SECONDS:
-        time.sleep(WRITE_THROTTLE_SECONDS)
+    ws = _open_worksheet(gc, file_id)
+
+    def _rewrite():
+        ws.clear()
+        if header_and_rows:
+            ws.update("A1", header_and_rows, value_input_option="RAW")
+
+    _with_quota_retry(
+        _rewrite,
+        limiter=_WRITE_LIMITER,
+        requests=VOLUME_WRITE_REQUESTS,
+        what=f"write {file_id}",
+    )
 
 
 def _read_volume(gc, file_id: str) -> list[list[str]]:
-    """Return ``get_all_values()`` of sheet 1 of ``file_id`` (header + body)."""
-    return gc.open_by_key(file_id).sheet1.get_all_values()
+    """Return ``get_all_values()`` of sheet 1 of ``file_id`` (header + body).
+
+    Quota-paced and 429-retried like the writer, so it is safe to call in a loop
+    over many volumes.
+    """
+    ws = _open_worksheet(gc, file_id)
+    return _with_quota_retry(
+        ws.get_all_values,
+        limiter=_READ_LIMITER,
+        requests=VALUES_READ_REQUESTS,
+        what=f"read {file_id}",
+    )
 
 
 def _read_volume_throttled(gc, file_id: str) -> list[list[str]]:
-    """`_read_volume` paced + retried for bulk reads.
+    """Bulk-read alias for :func:`_read_volume`.
 
-    ``--redistribute`` reads every volume back-to-back; ~100 unthrottled reads
-    can trip the per-minute read quota, so pace each read and retry on a 429
-    the same way ``_write_volume`` does.
+    Bulk reads used to need a separately paced variant; pacing now lives in
+    ``_read_volume`` for every caller, so the two are the same call. The name is
+    kept so the ``--redistribute`` harvest keeps its explicit "this is a bulk
+    read" call site.
     """
-    rows: list[list[str]] = []
-    for attempt in range(MAX_QUOTA_RETRIES + 1):
-        try:
-            rows = _read_volume(gc, file_id)
-            break
-        except APIError as e:
-            status = getattr(getattr(e, "response", None), "status_code", None)
-            if status == 429 and attempt < MAX_QUOTA_RETRIES:
-                print(
-                    f"  [quota] read-rate limit (429); waiting "
-                    f"{QUOTA_RETRY_WAIT_SECONDS}s then retrying "
-                    f"({attempt + 1}/{MAX_QUOTA_RETRIES})...",
-                    flush=True,
-                )
-                time.sleep(QUOTA_RETRY_WAIT_SECONDS)
-                continue
-            raise
-    if READ_THROTTLE_SECONDS:
-        time.sleep(READ_THROTTLE_SECONDS)
-    return rows
+    return _read_volume(gc, file_id)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 
 def _resolve_notebooklm_folder(
@@ -797,15 +942,21 @@ def sync_notes_to_notebooklm(
     pinned to one volume by :func:`volume_for_book_id`), it reads that volume
     back, merges new highlights (dedup by content, continuing the per-book
     ``highlight_id`` numbering), and rewrites the volume; then it refreshes the
-    index. Only touched volumes + the index are written, so a normal incremental
-    scrape stays well inside the Sheets write quota.
+    index. Only touched volumes + the index are written.
+
+    Every API call is quota-paced (see ``_RateLimiter``), so a run touching many
+    volumes slows down instead of dying on a 429 -- there is no need to split a
+    large add into several runs by hand.
 
     Files absent from the folder are reported in ``missing_files`` (service
     accounts cannot create Drive files), and their highlights are NOT written.
 
     Returns ``{new_books, new_highlights, skipped_duplicates, skipped_invalid,
-    total_notes, missing_files, touched_volumes}``. Progress is reported under
-    the existing ``"sheets"`` phase, one tick per file written.
+    total_notes, missing_files, touched_volumes, index_error}``. ``index_error``
+    is non-empty when the highlights reached their volume files but the index
+    refresh failed -- no data is lost, but the catalogue is stale until
+    ``python -m scripts.split_per_book --apply`` rebuilds it. Progress is
+    reported under the existing ``"sheets"`` phase, one tick per file written.
     """
     if not _RUNTIME_DEPS_OK:
         raise SystemExit(
@@ -822,6 +973,7 @@ def sync_notes_to_notebooklm(
         "total_notes": len(notes),
         "missing_files": [],
         "touched_volumes": 0,
+        "index_error": "",
     }
     if not notes:
         return summary
@@ -837,6 +989,7 @@ def sync_notes_to_notebooklm(
             "and GOOGLE_SHEETS_SPREADSHEET_ID in config/KEYS.env first."
         )
 
+    _reset_api_state()
     creds = _build_creds(repo_main.GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE)
     drive = _drive_session(creds)
     gc = _authorize_sheets(creds)
@@ -865,11 +1018,17 @@ def sync_notes_to_notebooklm(
 
     affected = sorted(notes_by_volume)
     total_files = len(affected) + 1  # + index
-    if len(affected) > 20:
+    # Warn when the per-minute quota will force the run to pace itself. The
+    # limiter makes this slow rather than fatal, but a caller staring at a
+    # progress bar deserves to know why it stalls.
+    est_reads = total_files * (OPEN_READ_REQUESTS + VALUES_READ_REQUESTS)
+    est_writes = total_files * VOLUME_WRITE_REQUESTS if apply else 0
+    eta_seconds = _quota_eta_seconds(est_reads, est_writes)
+    if eta_seconds >= QUOTA_WINDOW_SECONDS / 2:
         print(
-            f"[notebooklm] {len(affected)} volumes affected; this run issues "
-            f"~{total_files * 2} write requests and may take a few minutes "
-            "(paced to stay under the Sheets quota).",
+            f"[notebooklm] {len(affected)} volumes affected -> ~{est_reads} read / "
+            f"{est_writes} write requests. Paced to stay under the per-minute "
+            f"Sheets quota, so this takes {_format_eta(eta_seconds)}.",
             flush=True,
         )
 
@@ -902,29 +1061,45 @@ def sync_notes_to_notebooklm(
     # Refresh the index ONLY for touched books (gained a highlight / new book),
     # preserving every untouched row -- so an untouched book keeps its stored
     # highlight_count + last_synced_at.
+    #
+    # The volumes above are already written at this point, so an API failure here
+    # loses no highlights -- it only leaves the catalogue stale. Report that as a
+    # recoverable problem instead of raising, so the caller still receives the
+    # (accurate) volume counts and can tell the user exactly what to re-run.
     index_fname = index_filename(prefix)
     index_id = existing.get(index_fname)
+    index_error = ""
     if not index_id:
         missing_files.append(index_fname)
     elif touched_all:
-        books_by_id: dict[str, dict] = {}
-        for raw in _strip_header(_read_volume(gc, index_id), INDEX_HEADERS):
-            book = _index_row_to_book(raw)
-            if book["book_id"]:
-                books_by_id[book["book_id"]] = book
-        for bid in touched_all:
-            meta = book_meta.get(bid)
-            if not meta:
-                continue
-            books_by_id[bid] = {
-                "book_id": bid,
-                "title": meta["title"],
-                "highlight_count": str(meta["count"]),
-                "last_synced_at": today,
-            }
-        index_new_rows = index_rows(list(books_by_id.values()), {}, prefix)
-        if apply:
-            _write_volume(gc, index_id, index_new_rows)
+        try:
+            books_by_id: dict[str, dict] = {}
+            for raw in _strip_header(_read_volume(gc, index_id), INDEX_HEADERS):
+                book = _index_row_to_book(raw)
+                if book["book_id"]:
+                    books_by_id[book["book_id"]] = book
+            for bid in touched_all:
+                meta = book_meta.get(bid)
+                if not meta:
+                    continue
+                books_by_id[bid] = {
+                    "book_id": bid,
+                    "title": meta["title"],
+                    "highlight_count": str(meta["count"]),
+                    "last_synced_at": today,
+                }
+            index_new_rows = index_rows(list(books_by_id.values()), {}, prefix)
+            if apply:
+                _write_volume(gc, index_id, index_new_rows)
+        except APIError as e:
+            index_error = str(e)
+            print(
+                f"  [warn] the highlights were written to their volume files, but "
+                f"refreshing {index_fname} failed: {e}\n"
+                f"         Recover the catalogue with: "
+                f"py -3 -m scripts.split_per_book --apply",
+                flush=True,
+            )
         if progress_callback:
             progress_callback("sheets", total_files, total_files, index_fname)
 
@@ -933,6 +1108,7 @@ def sync_notes_to_notebooklm(
     final["total_notes"] = len(notes)
     final["missing_files"] = missing_files
     final["touched_volumes"] = written
+    final["index_error"] = index_error
     return final
 
 
@@ -957,6 +1133,7 @@ def list_books_from_index(
             "Runtime dependencies missing. Install requirements first: "
             "pip install -r requirements/requirements.txt"
         )
+    _reset_api_state()
     creds = _build_creds(service_account_file)
     drive = _drive_session(creds)
     gc = _authorize_sheets(creds)
@@ -1255,9 +1432,12 @@ def _cli_redistribute(gc, existing: dict, args) -> int:
         print(f"[backup] loaded harvested state from {backup_path} (volumes NOT re-read)")
     else:
         volume_files = [f for f in existing if re.match(rf"^{re.escape(args.prefix)}_vol_\d+$", f)]
+        harvest_eta = _quota_eta_seconds(
+            read_requests=len(volume_files) * (OPEN_READ_REQUESTS + VALUES_READ_REQUESTS)
+        )
         print(
             f"[harvest] reading {len(volume_files)} volume files "
-            f"(paced; ~{len(volume_files) * READ_THROTTLE_SECONDS:.0f}s)..."
+            f"(paced; {_format_eta(harvest_eta)})..."
         )
         highlights_by_book, titles_by_book, source_file_by_book, per_file = (
             _harvest_all_volumes(gc, existing, args.prefix)
@@ -1322,9 +1502,14 @@ def _cli_redistribute(gc, existing: dict, args) -> int:
         )
 
     if args.apply:
+        # The harvest above already opened (and cached) every volume, so only the
+        # write requests still cost quota here.
+        write_eta = _quota_eta_seconds(
+            write_requests=len(targets) * VOLUME_WRITE_REQUESTS
+        )
         print(
             f"[write] rewriting all {len(targets)} files "
-            f"(paced; ~{len(targets) * WRITE_THROTTLE_SECONDS / 60:.0f} min)..."
+            f"(paced; {_format_eta(write_eta)})..."
         )
     for fname, rows, label in targets:
         if args.apply:
@@ -1349,6 +1534,8 @@ def main_cli() -> int:
             "Runtime dependencies missing. Install requirements first: "
             "pip install -r requirements/requirements.txt"
         )
+
+    _reset_api_state()
 
     # Local import so tests do not pay the cost of nest_asyncio etc.
     import main as repo_main

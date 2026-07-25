@@ -186,6 +186,18 @@ only Notion is updated — relay that to the user.
 
 Optional flags: `--notion-only` / `--sheets-only` to target one destination.
 
+**A big add is slow, not broken.** Books land in different volume files, and every
+Sheets call is paced against the per-minute API quota, so an add spanning many
+volumes prints lines like `[quota] read limit reached (50/60s); waiting 36s...`
+and takes a minute or two. That is the throttle working — wait it out. Do **not**
+split the payload into several runs to avoid it, and do not kill the run. (Roughly:
+~3 read requests per touched volume, 50/min, so ~20 volumes ≈ 70s.)
+
+If you see `[partial failure] the highlights were written to their volume files,
+but the index refresh failed ...`, the highlights are safe — only the book
+catalogue is stale. Rebuild it with `py -3 -m scripts.split_per_book --apply`
+and tell the user what happened rather than reporting a clean success.
+
 ## Step 6 — (No manual split needed — propagation is automatic)
 
 **This step no longer requires any action.** `add_manual_highlights --apply`

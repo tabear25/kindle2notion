@@ -191,6 +191,12 @@ if __name__ == "__main__":
                         "  [warning] missing NotebookLM file(s) (NOT written): "
                         + ", ".join(sheets_summary["missing_files"])
                     )
+                if sheets_summary.get("index_error"):
+                    print(
+                        "  [warning] highlights reached their volume files but the "
+                        "index refresh failed; rebuild the catalogue with "
+                        "'py -3 -m scripts.split_per_book --apply'"
+                    )
             record_run_end(
                 store, run_id, status="done",
                 **run_stats(notes, notion_summary, sheets_summary),

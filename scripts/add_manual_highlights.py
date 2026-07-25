@@ -381,6 +381,14 @@ def write_notes(notes: list[dict], targets: list[str], *, apply: bool = True) ->
                 result["problems"].append(
                     "NotebookLM index file missing; the book catalogue is stale"
                 )
+            if summary.get("index_error"):
+                # Volumes are written before the index, so this loses nothing --
+                # only the catalogue is behind until the index is rebuilt.
+                result["problems"].append(
+                    "the highlights were written to their volume files, but the "
+                    f"index refresh failed ({summary['index_error']}); rebuild it "
+                    "with: py -3 -m scripts.split_per_book --apply"
+                )
 
     return result
 
