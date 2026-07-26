@@ -13,13 +13,13 @@
         <div class="card-header">
           <span class="badge">KINDLE SYNC</span>
           <h1>Kindle ハイライト同期</h1>
-          <p class="subtitle">Kindle のハイライトを Notion と Google Sheets に保存します。</p>
+          <p class="subtitle">Kindle のハイライトを Notion と Notebooklmに保存します。</p>
         </div>
         <div class="card-body">
           <div id="backend-banner" class="result-box hidden"></div>
           <label for="max-books">取得する書籍数</label>
           <input id="max-books" type="number" min="1" placeholder="空欄ですべて取得" inputmode="numeric">
-          <p class="helper">空欄のまま開始すると、表示されているすべての書籍を対象に処理します。</p>
+          <p class="helper">空欄のまま開始すると、すべての書籍を対象に処理します。</p>
           <label class="checkbox-row">
             <input id="full-resync" type="checkbox">
             <span>Notion キャッシュを全再同期してから実行する</span>
@@ -48,7 +48,7 @@
         <div class="card-header">
           <span class="badge">MANUAL ENTRY</span>
           <h1>手動でハイライトを追加</h1>
-          <p class="subtitle">Kindle にない本（紙の本・他ストアの電子書籍など）のハイライトを、同じ Notion / Google Sheets に登録します。</p>
+          <p class="subtitle">Kindle にない本（紙の本・他ストアの電子書籍など）のハイライトを、同じ Notion / Notebooklm に登録します。</p>
         </div>
         <div class="card-body">
           <label for="manual-title">本のタイトル</label>
@@ -100,7 +100,7 @@
 
           <div class="phase" id="phase-sheets">
             <div class="phase-top">
-              <span class="phase-label">Google Sheets 保存</span>
+              <span class="phase-label">Notebooklm に保存</span>
               <span class="phase-count" id="count-sheets"></span>
             </div>
             <div class="progress-track"><div class="progress-bar" id="bar-sheets"></div></div>

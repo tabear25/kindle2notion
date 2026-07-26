@@ -1,12 +1,3 @@
-# Render Blueprint for kindle2notion (Docker web service).
-#
-# Deploy:
-#   1. Commit Dockerfile / .dockerignore / render.yaml and push to GitHub.
-#   2. In the Render dashboard: New + -> Blueprint -> pick this repository.
-#   3. Render reads this file and prompts you to fill in every env var
-#      marked "sync: false" (secrets are never stored in Git).
-#
-# Full step-by-step guide: deploy/render/README.md
 services:
   - type: web
     name: kindle2notion
@@ -57,21 +48,4 @@ services:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: SCRAPE_MODE
-        value: "xhr"            # "dom" forces the legacy click-driven scraper
-
-    # ----------------------------------------------------------------
-    # Persistent disk — no longer needed: with TURSO_* set, the Amazon
-    # session (storage_state.json) is restored from Turso after every
-    # restart/redeploy, so the free plan works without re-doing 2FA.
-    #
-    # Attach a disk only if you prefer file-based persistence instead of
-    # Turso (paid plans only). Then also set:
-    #   - key: STORAGE_STATE_PATH
-    #     value: /var/data/storage_state.json
-    #   - key: K2N_LOCAL_DB_PATH
-    #     value: /var/data/local_store.db
-    #
-    # disk:
-    #   name: kindle2notion-data
-    #   mountPath: /var/data
-    #   sizeGB: 1
+        value: "xhr" 

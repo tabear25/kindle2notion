@@ -89,8 +89,6 @@ def run(playwright, max_books=None, progress_callback=None,
 
     browser = playwright.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
     try:
-        # Fast path: a saved session that still reaches the notebook skips
-        # the whole login (and 2FA) and scrapes right away.
         if STORAGE_STATE_PATH.exists():
             context = browser.new_context(storage_state=str(STORAGE_STATE_PATH))
             page = context.new_page()
@@ -102,8 +100,6 @@ def run(playwright, max_books=None, progress_callback=None,
             context.close()
 
         if headless_login:
-            # Web mode: log in headless in a fresh context of the same
-            # browser, then scrape in that authenticated context.
             context = browser.new_context()
             page = context.new_page()
             amazon.login.perform_login(
