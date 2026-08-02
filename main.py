@@ -27,7 +27,6 @@ GOOGLE_SHEETS_ENABLED = False
 GOOGLE_SHEETS_SERVICE_ACCOUNT_FILE = None
 GOOGLE_SHEETS_SPREADSHEET_ID = None
 
-
 def load_config():
     """Load and validate configuration from KEYS.env. Safe to call multiple times."""
     global _config_loaded
@@ -75,7 +74,6 @@ def load_config():
 
     _config_loaded = True
 
-
 def prompt_book_limit():
     from gui_utils.gui import ask_book_limit
     return ask_book_limit()
@@ -117,8 +115,6 @@ def run(playwright, max_books=None, progress_callback=None,
     finally:
         browser.close()
 
-    # GUI mode with no usable session: visible browser for the login (2FA
-    # dialog / manual auth on the page), then scrape headless as before.
     login_browser = playwright.chromium.launch(headless=False, args=BROWSER_LAUNCH_ARGS)
     try:
         login_context = login_browser.new_context()
