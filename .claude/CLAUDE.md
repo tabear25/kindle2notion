@@ -381,7 +381,13 @@ Contains two groups of helpers:
 ### `frontend/static/app.js`
 - `apiFetch(path, opts)`: prefixes the saved backend URL and adds a Basic `Authorization` header when the 接続設定 panel is configured (localStorage keys `k2n_api_base` / `k2n_api_user` / `k2n_api_pass`); same-origin use sends no explicit header (browser-native Basic auth, unchanged)
 - SSE is read via **fetch + ReadableStream** (`connectSSE`/`openEventStream`/`handleSSEFrame`) — EventSource cannot send Authorization headers. Abnormal stream end retries after 2s; the server's replay-from-zero makes that lossless
-- Start screen extras: `full_resync` checkbox (one-shot, auto-unchecks), backend wake-up banner polling `/healthz` every 5s while a sleeping Render instance spins up
+- Start screen extras: `full_resync` checkbox (one-shot, auto-unchecks), backend status banner polling `/healthz`
+- **Backend status banner (`checkBackendHealth`)**: `fetch` rejects identically for a sleeping instance, a wrong URL, a missing CORS entry and mixed content, so the banner classifies the failure instead of always printing the wake-up text (which used to stick forever on a misconfiguration):
+  - Up front, `apiBaseProblem()` rejects a non-`http(s)://` URL and an `http://` backend on an HTTPS page (mixed content) — no polling, since retrying cannot fix either
+  - Response received: `401/403` -> credentials, `404` -> wrong URL, `502/503/504` -> waking (then "起動できていない" past the grace period), other `5xx` -> backend error, anything else -> unexpected response (HTTP code always shown)
+  - Network-level rejection: `navigator.onLine === false` -> offline; otherwise a `mode: "no-cors"` probe of `/healthz` decides — an opaque response proves the server answered, so the failure is **CORS** (the message names `location.origin` to add to `CORS_ALLOWED_ORIGINS`); no response means unreachable, which stays "起動中" only within `WAKE_GRACE_MS` (90s) and then becomes "接続できません（N秒経過）"
+  - Retry cadence: `HEALTH_RETRY_MS` 5s while waking, `HEALTH_SLOW_RETRY_MS` 15s after a diagnosed fault (so a fixed env var recovers by itself), `0` for a config problem; every probe is bounded by `HEALTH_TIMEOUT_MS` (8s, `AbortController`) so a hung request cannot stall the loop. Elapsed time is measured from `healthWaitStartedAt`, reset on save so a new URL restarts the grace period
+  - Banner state classes are `result-box` + `ok` / `error`; 「同期を開始」 stays disabled unless `/healthz` returns ok
  
 ### `scripts/migrate_legacy_sheet.py` — DEPRECATED
 - One-shot migration from the legacy `Sheet1` (v1 flat schema) to `01_books` / `02_highlights`. **The destination master is now retired** (superseded by `split_per_book.sync_notes_to_notebooklm`); this script is kept for historical reference only and should not be run on live data.

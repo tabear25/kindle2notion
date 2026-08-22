@@ -89,11 +89,214 @@
     settingsStatus.textContent = settings.apiBase
       ? "保存しました。バックエンド: " + settings.apiBase
       : "保存しました。このページと同じサーバーを使います。";
+    healthWaitStartedAt = 0; // new URL -> restart the cold-start grace period
     checkBackendHealth();
   }
 
+  // ----------------------------------------------------------------
+  // Backend health probe
+  //
   // Render's free plan sleeps after idle; /healthz both probes and wakes it.
+  // But fetch() rejects the same way for a sleeping instance, a wrong URL, a
+  // missing CORS entry and mixed content, so showing the wake-up text on every
+  // failure left the banner stuck forever on a misconfiguration. Classify the
+  // failure first and keep the wake-up wording only while it is plausible.
+  // ----------------------------------------------------------------
+
+  var HEALTH_RETRY_MS = 5000; // while the instance may still be waking up
+  var HEALTH_SLOW_RETRY_MS = 15000; // after a diagnosed misconfiguration
+  var HEALTH_TIMEOUT_MS = 8000; // a hung request must not stall the loop
+  var WAKE_GRACE_MS = 90000; // Render cold start is ~1 min; past this it is broken
+  var WAKING_TEXT = "バックエンドを起動中です（無料プランのためスリープ解除に最大1分ほどかかります）...";
+
   var healthCheckTimer = null;
+  var healthWaitStartedAt = 0;
+
+  function setBanner(message, stateClass) {
+    backendBanner.textContent = message;
+    backendBanner.className = "result-box" + (stateClass ? " " + stateClass : "");
+  }
+
+  function hideBanner() {
+    backendBanner.className = "result-box hidden";
+  }
+
+  function waitedSeconds() {
+    return healthWaitStartedAt ? Math.round((Date.now() - healthWaitStartedAt) / 1000) : 0;
+  }
+
+  function stillWaking() {
+    return healthWaitStartedAt > 0 && Date.now() - healthWaitStartedAt < WAKE_GRACE_MS;
+  }
+
+  // Problems that no amount of retrying can fix — report instead of polling.
+  function apiBaseProblem(base) {
+    if (!/^https?:\/\//i.test(base)) {
+      return (
+        "バックエンドURLの形式が正しくありません: " +
+        base +
+        "。接続設定に https://<サービス名>.onrender.com の形式で入力してください。"
+      );
+    }
+    if (window.location.protocol === "https:" && /^http:\/\//i.test(base)) {
+      return (
+        "このページは HTTPS ですが、バックエンドURLが http:// です。ブラウザが通信をブロックするため、https:// のURLを設定してください。"
+      );
+    }
+    return null;
+  }
+
+  function withTimeout(run) {
+    var controller = typeof AbortController === "undefined" ? null : new AbortController();
+    var timer = controller
+      ? setTimeout(function () {
+          controller.abort();
+        }, HEALTH_TIMEOUT_MS)
+      : null;
+
+    function clear() {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+
+    return run(controller ? controller.signal : undefined).then(
+      function (value) {
+        clear();
+        return value;
+      },
+      function (error) {
+        clear();
+        throw error;
+      }
+    );
+  }
+
+  // An opaque (mode: "no-cors") response only proves the server answered at
+  // all — exactly what separates "CORS blocked it" from "nothing there".
+  function probeReachable() {
+    return withTimeout(function (signal) {
+      return fetch(settings.apiBase + "/healthz", {
+        mode: "no-cors",
+        cache: "no-store",
+        signal: signal,
+      });
+    }).then(
+      function () {
+        return true;
+      },
+      function () {
+        return false;
+      }
+    );
+  }
+
+  function bannerForStatus(status) {
+    if (status === 401 || status === 403) {
+      return {
+        text:
+          "バックエンドには届いていますが、認証で拒否されました（HTTP " +
+          status +
+          "）。接続設定のユーザー名・パスワード（WEB_USERNAME / WEB_PASSWORD）を確認してください。",
+        state: "error",
+        retryMs: HEALTH_SLOW_RETRY_MS,
+      };
+    }
+    if (status === 404) {
+      return {
+        text:
+          "バックエンドURLが違うようです（HTTP 404）。" +
+          settings.apiBase +
+          "/healthz が見つかりません。接続設定のURLを確認してください。",
+        state: "error",
+        retryMs: HEALTH_SLOW_RETRY_MS,
+      };
+    }
+    if (status === 502 || status === 503 || status === 504) {
+      if (stillWaking()) {
+        return {
+          text: WAKING_TEXT + "（HTTP " + status + " / " + waitedSeconds() + "秒経過）",
+          state: "",
+          retryMs: HEALTH_RETRY_MS,
+        };
+      }
+      return {
+        text:
+          "バックエンドが起動できていないようです（HTTP " +
+          status +
+          " が " +
+          waitedSeconds() +
+          "秒続いています）。Render のログでサービスの状態を確認してください。",
+        state: "error",
+        retryMs: HEALTH_SLOW_RETRY_MS,
+      };
+    }
+    if (status >= 500) {
+      return {
+        text:
+          "バックエンドがエラーを返しています（HTTP " +
+          status +
+          "）。Render のログを確認してください。",
+        state: "error",
+        retryMs: HEALTH_SLOW_RETRY_MS,
+      };
+    }
+    return {
+      text:
+        "バックエンドが想定外の応答を返しました（HTTP " +
+        status +
+        "）。URLが別のサービスを指していないか確認してください。",
+      state: "error",
+      retryMs: HEALTH_SLOW_RETRY_MS,
+    };
+  }
+
+  function bannerForNetworkFailure() {
+    if (window.navigator && window.navigator.onLine === false) {
+      return Promise.resolve({
+        text: "端末がオフラインのようです。ネットワーク接続を確認してください。",
+        state: "error",
+        retryMs: HEALTH_RETRY_MS,
+      });
+    }
+    return probeReachable().then(function (reachable) {
+      if (reachable) {
+        return {
+          text:
+            "バックエンドには接続できましたが、CORS でブラウザにブロックされています。Render の環境変数 CORS_ALLOWED_ORIGINS に " +
+            window.location.origin +
+            " を（末尾スラッシュなしで）設定して再デプロイしてください。",
+          state: "error",
+          retryMs: HEALTH_SLOW_RETRY_MS,
+        };
+      }
+      if (stillWaking()) {
+        return {
+          text: WAKING_TEXT + "（" + waitedSeconds() + "秒経過）",
+          state: "",
+          retryMs: HEALTH_RETRY_MS,
+        };
+      }
+      return {
+        text:
+          "バックエンドに接続できません（" +
+          waitedSeconds() +
+          "秒経過）。" +
+          settings.apiBase +
+          "/healthz をブラウザで直接開けるか、Render のサービスが停止していないかを確認してください。",
+        state: "error",
+        retryMs: HEALTH_SLOW_RETRY_MS,
+      };
+    });
+  }
+
+  function applyBanner(banner) {
+    setBanner(banner.text, banner.state);
+    btnStart.disabled = true;
+    if (banner.retryMs > 0) {
+      healthCheckTimer = setTimeout(checkBackendHealth, banner.retryMs);
+    }
+  }
 
   function checkBackendHealth() {
     if (healthCheckTimer) {
@@ -101,29 +304,40 @@
       healthCheckTimer = null;
     }
     if (!settings.apiBase) {
-      backendBanner.classList.add("hidden");
+      hideBanner();
       btnStart.disabled = false;
       return;
     }
-    backendBanner.classList.remove("hidden");
-    backendBanner.textContent = "バックエンドの状態を確認しています...";
+
+    var problem = apiBaseProblem(settings.apiBase);
+    if (problem) {
+      applyBanner({ text: problem, state: "error", retryMs: 0 });
+      return;
+    }
+
+    if (!healthWaitStartedAt) {
+      healthWaitStartedAt = Date.now();
+    }
+    setBanner("バックエンドの状態を確認しています...", "");
     btnStart.disabled = true;
-    apiFetch("/healthz")
-      .then(function (response) {
-        if (!response.ok) {
-          throw new Error("unhealthy");
+
+    withTimeout(function (signal) {
+      return apiFetch("/healthz", { signal: signal, cache: "no-store" });
+    }).then(
+      function (response) {
+        if (response.ok) {
+          healthWaitStartedAt = 0;
+          setBanner("バックエンドに接続できました。", "ok");
+          btnStart.disabled = false;
+          healthCheckTimer = setTimeout(hideBanner, 2000);
+          return;
         }
-        backendBanner.textContent = "バックエンドに接続できました。";
-        btnStart.disabled = false;
-        healthCheckTimer = setTimeout(function () {
-          backendBanner.classList.add("hidden");
-        }, 2000);
-      })
-      .catch(function () {
-        backendBanner.textContent =
-          "バックエンドを起動中です（無料プランのためスリープ解除に最大1分ほどかかります）...";
-        healthCheckTimer = setTimeout(checkBackendHealth, 5000);
-      });
+        applyBanner(bannerForStatus(response.status));
+      },
+      function () {
+        return bannerForNetworkFailure().then(applyBanner);
+      }
+    );
   }
 
   function showScreen(name) {
