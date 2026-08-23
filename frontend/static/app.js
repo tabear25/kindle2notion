@@ -105,9 +105,13 @@
 
   var HEALTH_RETRY_MS = 5000; // while the instance may still be waking up
   var HEALTH_SLOW_RETRY_MS = 15000; // after a diagnosed misconfiguration
-  var HEALTH_TIMEOUT_MS = 8000; // a hung request must not stall the loop
-  var WAKE_GRACE_MS = 90000; // Render cold start is ~1 min; past this it is broken
-  var WAKING_TEXT = "バックエンドを起動中です（無料プランのためスリープ解除に最大1分ほどかかります）...";
+  // Render holds the request open while a sleeping instance boots, and this
+  // image (Playwright + Chromium + gunicorn) regularly needs far longer than
+  // a few seconds — a short timeout would abort every wake-up attempt and
+  // then misreport the backend as unreachable.
+  var HEALTH_TIMEOUT_MS = 45000;
+  var WAKE_GRACE_MS = 240000; // cold start budget before calling it broken
+  var WAKING_TEXT = "バックエンドを起動中です（無料プランのためスリープ解除に1〜3分ほどかかります）...";
 
   var healthCheckTimer = null;
   var healthWaitStartedAt = 0;
@@ -146,10 +150,15 @@
     return null;
   }
 
+  // Tags its own abort: a request we cut off was accepted and left hanging
+  // (the instance is booting), which is a different diagnosis from a request
+  // the browser refused outright (wrong URL / CORS / offline).
   function withTimeout(run) {
     var controller = typeof AbortController === "undefined" ? null : new AbortController();
+    var timedOut = false;
     var timer = controller
       ? setTimeout(function () {
+          timedOut = true;
           controller.abort();
         }, HEALTH_TIMEOUT_MS)
       : null;
@@ -167,6 +176,11 @@
       },
       function (error) {
         clear();
+        if (timedOut) {
+          var timeoutError = new Error("health probe timed out");
+          timeoutError.timedOut = true;
+          throw timeoutError;
+        }
         throw error;
       }
     );
@@ -251,12 +265,31 @@
     };
   }
 
-  function bannerForNetworkFailure() {
+  function bannerForNetworkFailure(timedOut) {
     if (window.navigator && window.navigator.onLine === false) {
       return Promise.resolve({
         text: "端末がオフラインのようです。ネットワーク接続を確認してください。",
         state: "error",
         retryMs: HEALTH_RETRY_MS,
+      });
+    }
+    if (timedOut) {
+      // The request was accepted but never answered — a booting instance
+      // looks exactly like this, so keep waiting rather than probing again.
+      if (stillWaking()) {
+        return Promise.resolve({
+          text: WAKING_TEXT + "（応答待ち / " + waitedSeconds() + "秒経過）",
+          state: "",
+          retryMs: HEALTH_RETRY_MS,
+        });
+      }
+      return Promise.resolve({
+        text:
+          "バックエンドから応答がありません（" +
+          waitedSeconds() +
+          "秒経過）。Render のログでサービスが起動できているかを確認してください。",
+        state: "error",
+        retryMs: HEALTH_SLOW_RETRY_MS,
       });
     }
     return probeReachable().then(function (reachable) {
@@ -334,8 +367,8 @@
         }
         applyBanner(bannerForStatus(response.status));
       },
-      function () {
-        return bannerForNetworkFailure().then(applyBanner);
+      function (error) {
+        return bannerForNetworkFailure(!!(error && error.timedOut)).then(applyBanner);
       }
     );
   }
