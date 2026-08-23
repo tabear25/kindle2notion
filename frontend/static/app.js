@@ -110,7 +110,13 @@
   // a few seconds — a short timeout would abort every wake-up attempt and
   // then misreport the backend as unreachable.
   var HEALTH_TIMEOUT_MS = 45000;
-  var WAKE_GRACE_MS = 240000; // cold start budget before calling it broken
+  // The reachability probe only asks "did anything answer?" — it must not eat
+  // the wake-up budget the way a full-length deadline did, so it gets its own.
+  var PROBE_TIMEOUT_MS = 10000;
+  // A Playwright + Chromium + gunicorn image on the free plan regularly needs
+  // several minutes; 240s expired mid-boot and flipped the wording to "broken"
+  // while the instance was still perfectly healthy.
+  var WAKE_GRACE_MS = 420000; // cold start budget before calling it broken
   var WAKING_TEXT = "バックエンドを起動中です（無料プランのためスリープ解除に1〜3分ほどかかります）...";
 
   var healthCheckTimer = null;
@@ -153,14 +159,14 @@
   // Tags its own abort: a request we cut off was accepted and left hanging
   // (the instance is booting), which is a different diagnosis from a request
   // the browser refused outright (wrong URL / CORS / offline).
-  function withTimeout(run) {
+  function withTimeout(run, timeoutMs) {
     var controller = typeof AbortController === "undefined" ? null : new AbortController();
     var timedOut = false;
     var timer = controller
       ? setTimeout(function () {
           timedOut = true;
           controller.abort();
-        }, HEALTH_TIMEOUT_MS)
+        }, timeoutMs || HEALTH_TIMEOUT_MS)
       : null;
 
     function clear() {
@@ -186,8 +192,11 @@
     );
   }
 
-  // An opaque (mode: "no-cors") response only proves the server answered at
-  // all — exactly what separates "CORS blocked it" from "nothing there".
+  // Three-state on purpose. An opaque (mode: "no-cors") response proves only
+  // that *something* answered — while an instance boots that something is
+  // Render's router, not our app — whereas our own abort means the connection
+  // was accepted and left hanging, which is a booting instance. Collapsing all
+  // of this to a single false was what reported a waking backend as "gone".
   function probeReachable() {
     return withTimeout(function (signal) {
       return fetch(settings.apiBase + "/healthz", {
@@ -195,12 +204,49 @@
         cache: "no-store",
         signal: signal,
       });
-    }).then(
+    }, PROBE_TIMEOUT_MS).then(
       function () {
-        return true;
+        return "reachable";
       },
-      function () {
-        return false;
+      function (error) {
+        return error && error.timedOut ? "timeout" : "unreachable";
+      }
+    );
+  }
+
+  // /healthz proves the app is alive, but it is readable by every origin by
+  // design — the API routes are not. So a *network-level* failure here (as
+  // opposed to an HTTP status) is the real signature of a missing
+  // CORS_ALLOWED_ORIGINS entry, and the only place that diagnosis is sound.
+  function verifyApiReachable() {
+    return withTimeout(function (signal) {
+      return apiFetch("/api/status", { signal: signal, cache: "no-store" });
+    }, PROBE_TIMEOUT_MS).then(
+      function (response) {
+        if (response.status === 401 || response.status === 403) {
+          return {
+            text:
+              "バックエンドには届いていますが、認証で拒否されました（HTTP " +
+              response.status +
+              "）。接続設定のユーザー名・パスワード（WEB_USERNAME / WEB_PASSWORD）を確認してください。",
+            state: "error",
+            retryMs: HEALTH_SLOW_RETRY_MS,
+          };
+        }
+        return null;
+      },
+      function (error) {
+        if (error && error.timedOut) {
+          return null; // slow, not misconfigured — let the next poll decide
+        }
+        return {
+          text:
+            "バックエンドは起動していますが、API 呼び出しが CORS でブロックされています。Render の環境変数 CORS_ALLOWED_ORIGINS に " +
+            window.location.origin +
+            " を（末尾スラッシュなしで）設定して再デプロイしてください。",
+          state: "error",
+          retryMs: HEALTH_SLOW_RETRY_MS,
+        };
       }
     );
   }
@@ -226,6 +272,9 @@
         retryMs: HEALTH_SLOW_RETRY_MS,
       };
     }
+    // Reachable only when the failing response itself carries CORS headers.
+    // Render's router does not add them to its own 502/503 wake-up pages, so
+    // cross-origin cold starts land in bannerForNetworkFailure() instead.
     if (status === 502 || status === 503 || status === 504) {
       if (stillWaking()) {
         return {
@@ -265,6 +314,10 @@
     };
   }
 
+  // Reached only when /healthz was not readable. Since /healthz always answers
+  // `Access-Control-Allow-Origin: *`, that means the Flask app did not answer —
+  // so this path is never a CORS misconfiguration, only a question of whether
+  // anything is up yet. (verifyApiReachable() owns the CORS diagnosis.)
   function bannerForNetworkFailure(timedOut) {
     if (window.navigator && window.navigator.onLine === false) {
       return Promise.resolve({
@@ -292,22 +345,36 @@
         retryMs: HEALTH_SLOW_RETRY_MS,
       });
     }
-    return probeReachable().then(function (reachable) {
-      if (reachable) {
-        return {
-          text:
-            "バックエンドには接続できましたが、CORS でブラウザにブロックされています。Render の環境変数 CORS_ALLOWED_ORIGINS に " +
-            window.location.origin +
-            " を（末尾スラッシュなしで）設定して再デプロイしてください。",
-          state: "error",
-          retryMs: HEALTH_SLOW_RETRY_MS,
-        };
-      }
+    return probeReachable().then(function (result) {
+      // Inside the cold-start budget every outcome means the same thing: the
+      // instance has not finished booting. Say so instead of guessing a fault.
       if (stillWaking()) {
         return {
           text: WAKING_TEXT + "（" + waitedSeconds() + "秒経過）",
           state: "",
           retryMs: HEALTH_RETRY_MS,
+        };
+      }
+      if (result === "reachable") {
+        // Something answered, but /healthz was unreadable — so it was the
+        // router in front of the app, and the app never came up behind it.
+        return {
+          text:
+            "サーバーは応答していますが、バックエンドのアプリが起動していません（" +
+            waitedSeconds() +
+            "秒経過）。Render のログでビルドまたは起動が失敗していないか確認してください。",
+          state: "error",
+          retryMs: HEALTH_SLOW_RETRY_MS,
+        };
+      }
+      if (result === "timeout") {
+        return {
+          text:
+            "バックエンドから応答がありません（" +
+            waitedSeconds() +
+            "秒経過）。Render のログでサービスが起動できているかを確認してください。",
+          state: "error",
+          retryMs: HEALTH_SLOW_RETRY_MS,
         };
       }
       return {
@@ -350,20 +417,32 @@
 
     if (!healthWaitStartedAt) {
       healthWaitStartedAt = Date.now();
+      // Only on the first attempt of a wait: on later polls the banner already
+      // explains the cold start, and resetting it every cycle would hide that
+      // for most of the wait (the probe itself takes far longer than a poll).
+      setBanner("バックエンドの状態を確認しています...", "");
     }
-    setBanner("バックエンドの状態を確認しています...", "");
     btnStart.disabled = true;
 
     withTimeout(function (signal) {
-      return apiFetch("/healthz", { signal: signal, cache: "no-store" });
+      // Deliberately not apiFetch: /healthz is unauthenticated server-side, and
+      // attaching Authorization would turn this into a preflighted request. The
+      // preflight is the first thing to break while the instance is still
+      // booting, and its failure is unreadable from JS.
+      return fetch(settings.apiBase + "/healthz", { signal: signal, cache: "no-store" });
     }).then(
       function (response) {
         if (response.ok) {
-          healthWaitStartedAt = 0;
-          setBanner("バックエンドに接続できました。", "ok");
-          btnStart.disabled = false;
-          healthCheckTimer = setTimeout(hideBanner, 2000);
-          return;
+          return verifyApiReachable().then(function (problem) {
+            if (problem) {
+              applyBanner(problem);
+              return;
+            }
+            healthWaitStartedAt = 0;
+            setBanner("バックエンドに接続できました。", "ok");
+            btnStart.disabled = false;
+            healthCheckTimer = setTimeout(hideBanner, 2000);
+          });
         }
         applyBanner(bannerForStatus(response.status));
       },
