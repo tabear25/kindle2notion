@@ -1,5 +1,7 @@
 KEYS.env
 *.json
+# Deploy config that must be tracked (the blanket *.json above hides it)
+!frontend/vercel.json
 /test
 __pycache__/
 *.pyc
