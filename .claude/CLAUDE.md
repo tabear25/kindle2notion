@@ -378,6 +378,10 @@ Contains two groups of helpers:
 - Reads `WEB_HOST` (default `0.0.0.0`) and `WEB_PORT` (default `5000`) from env
 - Prints local + LAN access URLs on startup
  
+### `frontend/index.html` + `frontend/vercel.json`
+- Asset tags carry a cache-busting query (`/static/app.js?v=YYYYMMDD`, same for `style.css`). **Bump both when editing `app.js` / `style.css`** — the HTML always revalidates (`max-age=0, must-revalidate`), so a new `?v=` is what actually forces a phone browser to drop its cached copy; without it a deployed frontend fix can stay invisible on the device that reported the bug
+- `frontend/vercel.json` sets `Cache-Control: no-cache` on `/static/*` (Vercel's Root Directory is `frontend`, so the file must live there, not at the repo root). Belt-and-braces with the query: the header forces revalidation, the query changes the URL
+
 ### `frontend/static/app.js`
 - `apiFetch(path, opts)`: prefixes the saved backend URL and adds a Basic `Authorization` header when the 接続設定 panel is configured (localStorage keys `k2n_api_base` / `k2n_api_user` / `k2n_api_pass`); same-origin use sends no explicit header (browser-native Basic auth, unchanged)
 - SSE is read via **fetch + ReadableStream** (`connectSSE`/`openEventStream`/`handleSSEFrame`) — EventSource cannot send Authorization headers. Abnormal stream end retries after 2s; the server's replay-from-zero makes that lossless
