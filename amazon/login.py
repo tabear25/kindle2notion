@@ -10,7 +10,7 @@ TWO_FACTOR_SUBMIT_SELECTOR = "#auth-signin-button"
 NOTEBOOK_READY_SELECTOR = ".kp-notebook-library-each-book"
 LOAD_TIMEOUT = 15000
 SESSION_CHECK_TIMEOUT_MS = 10000
-NOTEBOOK_WAIT_TIMEOUT = 180000
+NOTEBOOK_WAIT_TIMEOUT = 150000
 POLL_INTERVAL_SECONDS = 0.5
 RACE_POLL_INTERVAL_MS = 250
 MAX_2FA_ATTEMPTS = 5
@@ -27,11 +27,6 @@ def _is_visible(page, selector: str) -> bool:
 
 def _wait_for_first_visible(page, selectors, timeout_ms: int,
                             poll_ms: int = RACE_POLL_INTERVAL_MS):
-    """Poll until one of ``selectors`` is visible; return it, or None on timeout.
-
-    ``selectors`` order is the priority when several are visible at once.
-    Checks at least once, so a zero timeout still sees the current state.
-    """
     deadline = time.time() + (timeout_ms / 1000)
     while True:
         for selector in selectors:
@@ -44,7 +39,6 @@ def _wait_for_first_visible(page, selectors, timeout_ms: int,
 
 def _wait_until_hidden(page, selector: str, timeout_ms: int,
                        poll_ms: int = RACE_POLL_INTERVAL_MS) -> bool:
-    """Poll until ``selector`` is no longer visible. True on success."""
     deadline = time.time() + (timeout_ms / 1000)
     while True:
         if not _is_visible(page, selector):
@@ -69,13 +63,6 @@ def _wait_for_notebook_ready(page, timeout_ms: int = NOTEBOOK_WAIT_TIMEOUT) -> N
 
 
 def is_session_valid(page, timeout_ms: int = SESSION_CHECK_TIMEOUT_MS) -> bool:
-    """Probe whether the page's storage state still reaches the notebook.
-
-    Loads the notebook URL and races the library list against the sign-in
-    form. Only a visible library counts as a valid session; any doubt
-    (timeout, navigation error) reports False so the caller falls back to a
-    normal login.
-    """
     try:
         page.goto(AMAZON_NOTEBOOK_URL, timeout=LOAD_TIMEOUT)
     except Exception:
@@ -86,7 +73,6 @@ def is_session_valid(page, timeout_ms: int = SESSION_CHECK_TIMEOUT_MS) -> bool:
         timeout_ms,
     )
     return matched == NOTEBOOK_READY_SELECTOR
-
 
 def _fill_if_visible(page, selector: str, value: str) -> bool:
     if not _is_visible(page, selector):
@@ -104,8 +90,6 @@ def _click_if_visible(page, selector: str) -> bool:
 
 def _handle_two_factor(page, two_factor_callback, allow_manual_auth: bool) -> None:
     if allow_manual_auth and two_factor_callback is None:
-        # Visible browser: the user completes 2FA (or any extra challenge)
-        # directly on the page.
         _wait_for_notebook_ready(page)
         return
 
@@ -135,10 +119,6 @@ def perform_login(page, amazon_email, amazon_password, two_factor_callback=None,
 
     _fill_if_visible(page, EMAIL_SELECTOR, amazon_email)
     _click_if_visible(page, CONTINUE_SELECTOR)
-
-    # Race the possible next states instead of waiting a full timeout for
-    # each in sequence: an already-authenticated session jumps straight to
-    # the notebook, a no-2FA account skips the OTP wait entirely.
     matched = _wait_for_first_visible(
         page,
         [PASSWORD_SELECTOR, TWO_FACTOR_INPUT_SELECTOR, NOTEBOOK_READY_SELECTOR],
