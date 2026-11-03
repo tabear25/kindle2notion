@@ -54,6 +54,14 @@
   var btnInstall = document.getElementById("btn-install");
   var shareNote = document.getElementById("share-note");
   var btnLastTitle = document.getElementById("btn-last-title");
+  var appTips = document.getElementById("app-tips");
+
+  // Running inside the Android app (android/: a WebView around this page),
+  // whose user agent carries a K2NAndroid/<version> token.
+  var IN_ANDROID_APP = /\bK2NAndroid\//.test(navigator.userAgent);
+  if (IN_ANDROID_APP) {
+    appTips.classList.add("hidden"); // "install this page as an app" makes no sense there
+  }
 
   // ----------------------------------------------------------------
   // Backend connection
@@ -915,7 +923,19 @@
     releaseWakeLock();
   }
 
+  // The Android app (android/) exposes window.K2NAndroid: its WebView has no
+  // Screen Wake Lock API, so it keeps the screen on through a window flag.
+  function nativeBridge() {
+    var bridge = window.K2NAndroid;
+    return bridge && typeof bridge.setKeepScreenOn === "function" ? bridge : null;
+  }
+
   function acquireWakeLock() {
+    var bridge = nativeBridge();
+    if (bridge) {
+      bridge.setKeepScreenOn(true); // a window flag: survives the app being hidden
+      return;
+    }
     if (wakeLock || wakeLockRequested || !navigator.wakeLock || document.visibilityState !== "visible") {
       return;
     }
@@ -942,6 +962,11 @@
   }
 
   function releaseWakeLock() {
+    var bridge = nativeBridge();
+    if (bridge) {
+      bridge.setKeepScreenOn(false);
+      return;
+    }
     if (wakeLock) {
       var lock = wakeLock;
       wakeLock = null;

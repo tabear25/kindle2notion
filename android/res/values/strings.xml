@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ハイライト</string>
+    <string name="share_label">ハイライトに追加</string>
+
+    <string name="action_sync">Kindle同期</string>
+    <string name="action_manual">手動で追加</string>
+
+    <string name="widget_label">Kindle同期・手動追加</string>
+    <string name="widget_description">1 タップで Kindle の同期を始めるか、手動追加の画面を開きます</string>
+
+    <string name="shortcut_sync_short">Kindle同期</string>
+    <string name="shortcut_sync_long">Kindle のハイライトを今すぐ同期</string>
+    <string name="shortcut_manual_short">手動で追加</string>
+    <string name="shortcut_manual_long">紙の本のハイライトを手動で追加</string>
+    <string name="shortcut_settings_short">接続先を変更</string>
+    <string name="shortcut_settings_long">開く画面の URL を変更</string>
+
+    <string name="setup_title">最初の設定</string>
+    <string name="setup_message">ふだん Chrome で開いているハイライト同期の画面（Vercel）の URL を入力してください。</string>
+    <string name="setup_hint">https://xxxx.vercel.app</string>
+    <string name="setup_save">保存して開く</string>
+    <string name="setup_cancel">キャンセル</string>
+    <string name="setup_invalid">https:// で始まる URL を入力してください（例: https://xxxx.vercel.app）。</string>
+    <string name="setup_note">バックエンド（Render）の URL と Basic 認証は、開いた画面の下にある「接続設定」で一度だけ入力します。</string>
+
+    <string name="error_title">画面を開けませんでした</string>
+    <string name="error_message">通信できる状態か、接続先の URL が正しいかを確認してください。</string>
+    <string name="error_retry">再読み込み</string>
+    <string name="error_change_url">接続先を変更</string>
+</resources>

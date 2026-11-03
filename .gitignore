@@ -12,3 +12,5 @@ local_store.db
 .pytest_cache/
 .pytest_tmp/
 backups/
+# Android build output (APK, throwaway signing key, intermediates)
+android/build/

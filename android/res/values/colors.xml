@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same palette as frontend/static/style.css -->
+<resources>
+    <color name="accent">#0EA5E9</color>
+    <color name="accent_dark">#0284C7</color>
+    <color name="accent_deep">#0369A1</color>
+    <color name="accent_soft">#E0F2FE</color>
+    <color name="background">#EDF4FF</color>
+    <color name="card">#FFFFFF</color>
+    <color name="card_edge">#D8E6F5</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#475569</color>
+    <color name="danger">#DC2626</color>
+</resources>
