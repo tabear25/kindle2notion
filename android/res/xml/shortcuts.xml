@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press menu on the launcher icon; each entry can be dragged onto the home screen. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_sync"
+        android:shortcutId="sync"
+        android:shortcutLongLabel="@string/shortcut_sync_long"
+        android:shortcutShortLabel="@string/shortcut_sync_short">
+        <intent
+            android:action="io.github.tabear25.kindle2notion.action.SYNC"
+            android:targetClass="io.github.tabear25.kindle2notion.MainActivity"
+            android:targetPackage="io.github.tabear25.kindle2notion" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_manual"
+        android:shortcutId="manual"
+        android:shortcutLongLabel="@string/shortcut_manual_long"
+        android:shortcutShortLabel="@string/shortcut_manual_short">
+        <intent
+            android:action="io.github.tabear25.kindle2notion.action.MANUAL"
+            android:targetClass="io.github.tabear25.kindle2notion.MainActivity"
+            android:targetPackage="io.github.tabear25.kindle2notion" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_settings"
+        android:shortcutId="settings"
+        android:shortcutLongLabel="@string/shortcut_settings_long"
+        android:shortcutShortLabel="@string/shortcut_settings_short">
+        <intent
+            android:action="io.github.tabear25.kindle2notion.action.SETTINGS"
+            android:targetClass="io.github.tabear25.kindle2notion.MainActivity"
+            android:targetPackage="io.github.tabear25.kindle2notion" />
+    </shortcut>
+</shortcuts>
