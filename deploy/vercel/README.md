@@ -54,6 +54,15 @@ CORS_ALLOWED_ORIGINS=https://kindle2notion.vercel.app
 
 設定はブラウザの localStorage に保存されるため、次回以降の入力は不要です。
 
+### 4. Android にアプリとしてインストールする（任意）
+
+同じ URL を Android の Chrome で開き、「スマホにアプリとしてインストール」を押すとアプリとして入ります。
+ホーム画面から 1 タップで同期する方法や、他アプリの「共有」からハイライトを追加する方法は
+[`docs/ANDROID_APP.md`](../../docs/ANDROID_APP.md) を参照してください。
+
+Vercel 側の追加設定は不要です（`frontend/vercel.json` が `/sw.js` と `/manifest.webmanifest` を
+キャッシュさせないヘッダーを付けます）。
+
 ## 動作の補足
 
 - バックエンドがスリープ中は「バックエンドを起動中です（最大1分）」と表示され、

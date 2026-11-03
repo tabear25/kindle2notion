@@ -43,6 +43,17 @@
   var apiPassInput = document.getElementById("api-pass");
   var btnSaveSettings = document.getElementById("btn-save-settings");
   var settingsStatus = document.getElementById("settings-status");
+  var connectionSettings = document.getElementById("connection-settings");
+
+  // Installed-app (PWA) entry points: shortcut auto-start, last run, install,
+  // share target
+  var autoStartNote = document.getElementById("auto-start-note");
+  var autoStartText = document.getElementById("auto-start-text");
+  var btnCancelAutoStart = document.getElementById("btn-cancel-auto-start");
+  var lastRunLine = document.getElementById("last-run");
+  var btnInstall = document.getElementById("btn-install");
+  var shareNote = document.getElementById("share-note");
+  var btnLastTitle = document.getElementById("btn-last-title");
 
   // ----------------------------------------------------------------
   // Backend connection
@@ -90,7 +101,8 @@
       ? "保存しました。バックエンド: " + settings.apiBase
       : "保存しました。このページと同じサーバーを使います。";
     healthWaitStartedAt = 0; // new URL -> restart the cold-start grace period
-    checkBackendHealth();
+    backendReady = false;
+    checkBackendHealth(true); // supersede a probe still in flight against the old URL
   }
 
   // ----------------------------------------------------------------
@@ -121,14 +133,21 @@
 
   var healthCheckTimer = null;
   var healthWaitStartedAt = 0;
+  // A probe can stay open for HEALTH_TIMEOUT_MS. Resuming the app or saving
+  // new settings starts another check, and the generation counter makes sure
+  // a superseded probe can never overwrite the banner or re-arm a timer.
+  var healthGeneration = 0;
+  var healthProbeInFlight = false;
+  // True once the backend answered; start/visibility logic relies on it.
+  var backendReady = false;
 
   function setBanner(message, stateClass) {
     backendBanner.textContent = message;
-    backendBanner.className = "result-box" + (stateClass ? " " + stateClass : "");
+    backendBanner.className = "result-box banner" + (stateClass ? " " + stateClass : "");
   }
 
   function hideBanner() {
-    backendBanner.className = "result-box hidden";
+    backendBanner.className = "result-box banner hidden";
   }
 
   function waitedSeconds() {
@@ -218,6 +237,10 @@
   // design — the API routes are not. So a *network-level* failure here (as
   // opposed to an HTTP status) is the real signature of a missing
   // CORS_ALLOWED_ORIGINS entry, and the only place that diagnosis is sound.
+  //
+  // Resolves to { problem, pipelineStatus }: problem is a banner or null, and
+  // pipelineStatus is the backend's run state when it could be read — it tells
+  // a freshly opened app whether a sync is already in progress.
   function verifyApiReachable() {
     return withTimeout(function (signal) {
       return apiFetch("/api/status", { signal: signal, cache: "no-store" });
@@ -225,28 +248,51 @@
       function (response) {
         if (response.status === 401 || response.status === 403) {
           return {
-            text:
-              "バックエンドには届いていますが、認証で拒否されました（HTTP " +
-              response.status +
-              "）。接続設定のユーザー名・パスワード（WEB_USERNAME / WEB_PASSWORD）を確認してください。",
-            state: "error",
-            retryMs: HEALTH_SLOW_RETRY_MS,
+            problem: {
+              text:
+                "バックエンドには届いていますが、認証で拒否されました（HTTP " +
+                response.status +
+                "）。接続設定のユーザー名・パスワード（WEB_USERNAME / WEB_PASSWORD）を確認してください。",
+              state: "error",
+              retryMs: HEALTH_SLOW_RETRY_MS,
+            },
+            pipelineStatus: null,
           };
         }
-        return null;
+        return readPipelineStatus(response).then(function (pipelineStatus) {
+          return { problem: null, pipelineStatus: pipelineStatus };
+        });
       },
       function (error) {
         if (error && error.timedOut) {
-          return null; // slow, not misconfigured — let the next poll decide
+          // slow, not misconfigured — let the next poll decide
+          return { problem: null, pipelineStatus: null };
         }
         return {
-          text:
-            "バックエンドは起動していますが、API 呼び出しが CORS でブロックされています。Render の環境変数 CORS_ALLOWED_ORIGINS に " +
-            window.location.origin +
-            " を（末尾スラッシュなしで）設定して再デプロイしてください。",
-          state: "error",
-          retryMs: HEALTH_SLOW_RETRY_MS,
+          problem: {
+            text:
+              "バックエンドは起動していますが、API 呼び出しが CORS でブロックされています。Render の環境変数 CORS_ALLOWED_ORIGINS に " +
+              window.location.origin +
+              " を（末尾スラッシュなしで）設定して再デプロイしてください。",
+            state: "error",
+            retryMs: HEALTH_SLOW_RETRY_MS,
+          },
+          pipelineStatus: null,
         };
+      }
+    );
+  }
+
+  function readPipelineStatus(response) {
+    if (!response.ok) {
+      return Promise.resolve(null);
+    }
+    return response.json().then(
+      function (data) {
+        return (data && data.status) || null;
+      },
+      function () {
+        return null;
       }
     );
   }
@@ -392,20 +438,34 @@
 
   function applyBanner(banner) {
     setBanner(banner.text, banner.state);
+    backendReady = false;
     btnStart.disabled = true;
     if (banner.retryMs > 0) {
       healthCheckTimer = setTimeout(checkBackendHealth, banner.retryMs);
     }
   }
 
-  function checkBackendHealth() {
+  // force: supersede a probe that is still in flight (new settings, or the
+  // start button found the backend asleep). Without it a second check is
+  // skipped, since the running probe will report anyway.
+  function checkBackendHealth(force) {
+    if (healthProbeInFlight && !force) {
+      return;
+    }
     if (healthCheckTimer) {
       clearTimeout(healthCheckTimer);
       healthCheckTimer = null;
     }
+    var generation = ++healthGeneration;
+    function isCurrent() {
+      return generation === healthGeneration;
+    }
+    healthProbeInFlight = false;
+
     if (!settings.apiBase) {
       hideBanner();
       btnStart.disabled = false;
+      checkSameOriginPipeline(isCurrent);
       return;
     }
 
@@ -423,6 +483,7 @@
       setBanner("バックエンドの状態を確認しています...", "");
     }
     btnStart.disabled = true;
+    healthProbeInFlight = true;
 
     withTimeout(function (signal) {
       // Deliberately not apiFetch: /healthz is unauthenticated server-side, and
@@ -432,27 +493,90 @@
       return fetch(settings.apiBase + "/healthz", { signal: signal, cache: "no-store" });
     }).then(
       function (response) {
+        if (!isCurrent()) {
+          return undefined;
+        }
         if (response.ok) {
-          return verifyApiReachable().then(function (problem) {
-            if (problem) {
-              applyBanner(problem);
+          return verifyApiReachable().then(function (result) {
+            if (!isCurrent()) {
+              return;
+            }
+            healthProbeInFlight = false;
+            if (result.problem) {
+              applyBanner(result.problem);
               return;
             }
             healthWaitStartedAt = 0;
             setBanner("バックエンドに接続できました。", "ok");
             btnStart.disabled = false;
             healthCheckTimer = setTimeout(hideBanner, 2000);
+            onBackendReady(result.pipelineStatus);
           });
         }
+        healthProbeInFlight = false;
         applyBanner(bannerForStatus(response.status));
+        return undefined;
       },
       function (error) {
-        return bannerForNetworkFailure(!!(error && error.timedOut)).then(applyBanner);
+        if (!isCurrent()) {
+          return undefined;
+        }
+        return bannerForNetworkFailure(!!(error && error.timedOut)).then(function (banner) {
+          if (!isCurrent()) {
+            return;
+          }
+          healthProbeInFlight = false;
+          applyBanner(banner);
+        });
       }
     );
   }
 
+  // Same-origin (Flask-served) mode has no wake-up dance, but a freshly
+  // opened app still needs to know whether a sync is already running.
+  function checkSameOriginPipeline(isCurrent) {
+    withTimeout(function (signal) {
+      return apiFetch("/api/status", { signal: signal, cache: "no-store" });
+    }, PROBE_TIMEOUT_MS)
+      .then(readPipelineStatus, function () {
+        return null;
+      })
+      .then(function (pipelineStatus) {
+        if (isCurrent()) {
+          onBackendReady(pipelineStatus);
+        }
+      });
+  }
+
+  // Runs once per successful health check — the single place where a pending
+  // shortcut start fires and a reopened app picks up a run in progress.
+  function onBackendReady(pipelineStatus) {
+    backendReady = true;
+    loadLastRun();
+    if (currentScreen !== "start") {
+      return; // never yank the user out of the manual form or a result screen
+    }
+    if (pipelineStatus === "running" || pipelineStatus === "waiting_2fa") {
+      clearAutoStart(); // the run the shortcut asked for is already going
+      attachToRunningPipeline();
+      return;
+    }
+    if (autoStartPending) {
+      clearAutoStart();
+      startPipeline();
+    }
+  }
+
+  // The start button only makes sense once the backend has answered (or when
+  // the UI is served by the backend itself).
+  function startAllowed() {
+    return !settings.apiBase || backendReady;
+  }
+
+  var currentScreen = "start";
+
   function showScreen(name) {
+    currentScreen = name;
     Object.keys(screens).forEach(function (key) {
       screens[key].classList.toggle("active", key === name);
     });
@@ -594,6 +718,10 @@
 
   function dispatchSSEEvent(eventType, data) {
     if (eventType === "progress") {
+      // Progress resumes only after the login got past the code prompt, so a
+      // 2fa_required replayed on reconnect (or on reopening the app) must not
+      // leave the code dialog up over a run that has moved on.
+      modal2fa.classList.remove("active");
       updatePhase(data.phase, data.current, data.total, data.message);
     } else if (eventType === "2fa_required") {
       modal2fa.classList.add("active");
@@ -640,24 +768,249 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
-      .then(function (response) {
-        if (!response.ok) {
-          return response.json().then(function (data) {
-            throw new Error(data.error || "同期を開始できませんでした。");
-          });
-        }
+      .then(
+        function (response) {
+          if (response.status === 409) {
+            // Already running (a second tap, the shortcut fired twice, another
+            // device): show that run instead of failing.
+            startRetries = 0;
+            attachToRunningPipeline();
+            return undefined;
+          }
+          if (settings.apiBase && isWakingStatus(response.status)) {
+            retryStartAfterWake();
+            return undefined;
+          }
+          if (!response.ok) {
+            return readStartError(response).then(function (message) {
+              throw new Error(message);
+            });
+          }
 
-        fullResync.checked = false; // one-shot option
-        resetProgress();
-        showScreen("progress");
-        connectSSE();
-      })
+          startRetries = 0;
+          fullResync.checked = false; // one-shot option
+          resetProgress();
+          showScreen("progress");
+          connectSSE();
+          return undefined;
+        },
+        function (error) {
+          if (settings.apiBase) {
+            // Render idles out after 15 minutes, so an app left open (or
+            // resumed from the background) often finds the backend asleep
+            // again. Wake it and start once it answers instead of failing.
+            retryStartAfterWake();
+            return;
+          }
+          throw error;
+        }
+      )
       .catch(function (error) {
         alert(error.message);
       })
       .finally(function () {
-        btnStart.disabled = false;
+        btnStart.disabled = !startAllowed();
         btnStart.textContent = "同期を開始";
+      });
+  }
+
+  // Each failed start falls back to "wake, then start again". If the backend
+  // keeps passing the health check but refusing the start, that loop must end.
+  var MAX_START_RETRIES = 3;
+  var startRetries = 0;
+
+  function retryStartAfterWake() {
+    if (startRetries >= MAX_START_RETRIES) {
+      startRetries = 0;
+      clearAutoStart();
+      throw new Error(
+        "バックエンドには接続できていますが、同期を開始できませんでした。少し時間をおいてから、もう一度お試しください。"
+      );
+    }
+    startRetries += 1;
+    waitForBackendThenStart();
+  }
+
+  // A tap on the button is a fresh attempt, not a continuation of retries.
+  function startPipelineByUser() {
+    startRetries = 0;
+    startPipeline();
+  }
+
+  function isWakingStatus(status) {
+    return status === 502 || status === 503 || status === 504;
+  }
+
+  function readStartError(response) {
+    if (response.status === 401 || response.status === 403) {
+      connectionSettings.open = true;
+      return Promise.resolve(
+        "認証で拒否されました（HTTP " +
+          response.status +
+          "）。接続設定のユーザー名・パスワード（WEB_USERNAME / WEB_PASSWORD）を確認してください。"
+      );
+    }
+    return response.json().then(
+      function (data) {
+        return (data && data.error) || "同期を開始できませんでした（HTTP " + response.status + "）。";
+      },
+      function () {
+        // Not the API's JSON: most likely a static host serving this page
+        // without a backend behind it (Vercel before 接続設定 is saved).
+        if (!settings.apiBase) {
+          connectionSettings.open = true;
+          return (
+            "同期を開始できませんでした（HTTP " +
+            response.status +
+            "）。このページをバックエンドとは別のサーバー（Vercel など）で開いている場合は、下の「接続設定」でバックエンド URL を保存してください。"
+          );
+        }
+        return "同期を開始できませんでした（HTTP " + response.status + "）。";
+      }
+    );
+  }
+
+  function waitForBackendThenStart() {
+    backendReady = false;
+    healthWaitStartedAt = 0; // a fresh cold start: restart the grace period
+    requestAutoStart();
+    checkBackendHealth(true);
+  }
+
+  // Reopening the app (or a 409 from /api/start) while the server is mid-run:
+  // the SSE endpoint replays every event from the start, so the progress
+  // screen catches up by itself — including a pending 2FA prompt.
+  function attachToRunningPipeline() {
+    resetProgress();
+    setStatus("実行中の同期に接続しています...");
+    showScreen("progress");
+    connectSSE();
+  }
+
+  // ----------------------------------------------------------------
+  // Auto-start (the 「Kindle同期」 home-screen shortcut)
+  //
+  // Render's free plan needs minutes to wake, so a one-tap sync cannot fire
+  // immediately: the request waits for the health check and onBackendReady()
+  // starts the run. The wait only advances while the app is visible (Android
+  // throttles hidden pages), so the screen is kept on meanwhile. Once the run
+  // has started it lives on the server and the app can be closed.
+  // ----------------------------------------------------------------
+
+  var autoStartPending = false;
+  var wakeLock = null;
+  var wakeLockRequested = false;
+
+  function requestAutoStart() {
+    autoStartPending = true;
+    autoStartText.textContent =
+      "バックエンドの準備ができ次第、自動で同期を開始します。開始まではこの画面を開いたままにしてください（開始後は閉じても処理は続きます）。";
+    autoStartNote.classList.remove("hidden");
+    acquireWakeLock();
+  }
+
+  function clearAutoStart() {
+    autoStartPending = false;
+    autoStartNote.classList.add("hidden");
+    releaseWakeLock();
+  }
+
+  function acquireWakeLock() {
+    if (wakeLock || wakeLockRequested || !navigator.wakeLock || document.visibilityState !== "visible") {
+      return;
+    }
+    wakeLockRequested = true;
+    navigator.wakeLock.request("screen").then(
+      function (lock) {
+        wakeLockRequested = false;
+        if (!autoStartPending) {
+          lock.release().catch(function () {});
+          return;
+        }
+        wakeLock = lock;
+        lock.addEventListener("release", function () {
+          if (wakeLock === lock) {
+            wakeLock = null; // the browser drops it whenever the app is hidden
+          }
+        });
+      },
+      function () {
+        // Unsupported or refused: the wait still works, the screen may dim.
+        wakeLockRequested = false;
+      }
+    );
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) {
+      var lock = wakeLock;
+      wakeLock = null;
+      lock.release().catch(function () {});
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Last run — the at-a-glance status a home-screen widget would show
+  // ----------------------------------------------------------------
+
+  function formatRunTime(iso) {
+    var date = new Date(iso);
+    if (isNaN(date.getTime())) {
+      return iso || "";
+    }
+    return date.toLocaleString("ja-JP", {
+      month: "numeric",
+      day: "numeric",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function describeRun(run) {
+    var when = formatRunTime(run.finished_at);
+    if (run.status === "done") {
+      var counts = [];
+      if (run.notion_added != null) {
+        counts.push("Notion 新規 " + run.notion_added + " 件");
+      }
+      if (run.sheets_new_highlights != null) {
+        counts.push("NotebookLM 新規 " + run.sheets_new_highlights + " 件");
+      }
+      return "前回の同期: " + when + " 完了" + (counts.length ? "（" + counts.join(" / ") + "）" : "");
+    }
+    var error = run.error ? String(run.error) : "";
+    if (error.length > 80) {
+      error = error.slice(0, 80) + "…";
+    }
+    return "前回の同期: " + when + " 失敗" + (error ? "（" + error + "）" : "");
+  }
+
+  function loadLastRun() {
+    apiFetch("/api/runs", { cache: "no-store" })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (data) {
+        var runs = (data && data.available && data.runs) || [];
+        var latest = null;
+        for (var i = 0; i < runs.length; i++) {
+          // Skip runs without an end: one still in progress, or one cut off
+          // by an instance restart, says nothing about the last result.
+          if (runs[i].finished_at) {
+            latest = runs[i];
+            break;
+          }
+        }
+        if (!latest) {
+          lastRunLine.className = "last-run hidden";
+          return;
+        }
+        lastRunLine.textContent = describeRun(latest);
+        lastRunLine.className = "last-run" + (latest.status === "done" ? "" : " error");
+      })
+      .catch(function () {
+        lastRunLine.className = "last-run hidden";
       });
   }
 
@@ -700,6 +1053,9 @@
     inputBooks.value = "";
     input2fa.value = "";
     showScreen("start");
+    if (startAllowed()) {
+      loadLastRun(); // a run may have just finished
+    }
   }
 
   // ----------------------------------------------------------------
@@ -729,7 +1085,32 @@
     manualPhysical.checked = false;
     manualMatches.innerHTML = "";
     setManualResult("");
+    shareNote.classList.add("hidden");
     invalidatePreview();
+    refreshLastTitleChip();
+  }
+
+  // The last book a highlight was added to. Highlights tend to arrive in a
+  // run from the same book (one share per passage while reading), so offering
+  // it saves retyping — as a one-tap choice, never pre-filled, so a highlight
+  // can't land in the wrong book unnoticed.
+  var LAST_TITLE_KEY = "k2n_last_manual_title";
+
+  function refreshLastTitleChip() {
+    var last = localStorage.getItem(LAST_TITLE_KEY) || "";
+    if (!last || manualTitle.value.trim() === last) {
+      btnLastTitle.classList.add("hidden");
+      return;
+    }
+    btnLastTitle.textContent = "前回の本を使う: " + last;
+    btnLastTitle.classList.remove("hidden");
+  }
+
+  function useLastTitle() {
+    manualTitle.value = localStorage.getItem(LAST_TITLE_KEY) || "";
+    manualMatches.innerHTML = "";
+    invalidatePreview();
+    refreshLastTitleChip();
   }
 
   function readHighlightLines() {
@@ -897,6 +1278,7 @@
     }
     btnManualApply.disabled = true;
     btnManualApply.textContent = "追加中...";
+    var appliedTitle = manualPreviewedPayload.title;
     apiFetch("/api/manual/highlights", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -911,6 +1293,7 @@
         });
       })
       .then(function (data) {
+        localStorage.setItem(LAST_TITLE_KEY, appliedTitle);
         if (data.ok) {
           setManualResult("追加が完了しました。\n\n" + describeResult(data), "ok");
           manualHighlights.value = "";
@@ -929,21 +1312,130 @@
   }
 
   function goToManual() {
+    clearAutoStart(); // leaving the start screen cancels a pending shortcut start
     resetManual();
     showScreen("manual");
     manualTitle.focus();
   }
+
+  // ----------------------------------------------------------------
+  // Share target: 「共有」 from any Android app (Google Lens on a paper book,
+  // a PDF reader, Play Books...) opens the manual form with the text filled in.
+  // ----------------------------------------------------------------
+
+  var URL_PATTERN = /https?:\/\/\S+/g;
+  var CJK_PATTERN = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/;
+
+  // One shared passage is one highlight. OCR and PDF selections break the
+  // text at every printed line, and the form treats each line as a separate
+  // highlight, so the wrapped lines are joined back — with no space where
+  // either side is Japanese, which is how the original text reads.
+  function joinWrappedLines(text) {
+    return text.replace(/\s*\n\s*/g, function (match, offset, whole) {
+      var before = whole.charAt(offset - 1);
+      var after = whole.charAt(offset + match.length);
+      return CJK_PATTERN.test(before) || CJK_PATTERN.test(after) ? "" : " ";
+    });
+  }
+
+  function sharedHighlightText(share) {
+    // Apps put the selection in text; title (EXTRA_SUBJECT) is usually a page
+    // or book name, so it is only a fallback. Links are never highlight text.
+    var text = share.text || share.title || "";
+    text = text.replace(/\r\n?/g, "\n").replace(URL_PATTERN, "");
+    return joinWrappedLines(text).trim();
+  }
+
+  function openManualFromShare(share) {
+    goToManual();
+    var text = sharedHighlightText(share);
+    if (text) {
+      manualHighlights.value = text;
+      shareNote.textContent =
+        "共有されたテキストを 1 件のハイライトとして入力しました。複数に分けるときは改行で区切ってください。本のタイトルを決めたら「内容を確認」へ進みます。";
+    } else {
+      shareNote.textContent = "共有された内容から本文を取り出せませんでした。ハイライトを直接入力してください。";
+    }
+    shareNote.classList.remove("hidden");
+  }
+
+  // ----------------------------------------------------------------
+  // Launch intents: manifest shortcuts (?action=sync|manual) and the share
+  // target (?share_title / share_text / share_url). Read once, then removed
+  // from the address bar so a reload never re-runs them.
+  // ----------------------------------------------------------------
+
+  function consumeLaunchParams() {
+    var params = new URLSearchParams(window.location.search);
+    var launch = { action: params.get("action") || "", share: null };
+    if (params.has("share_text") || params.has("share_title") || params.has("share_url")) {
+      launch.share = {
+        title: params.get("share_title") || "",
+        text: params.get("share_text") || "",
+        url: params.get("share_url") || "",
+      };
+    }
+    if (window.location.search) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+    }
+    return launch;
+  }
+
+  // ----------------------------------------------------------------
+  // Install as an app (Android Chrome turns this page into a WebAPK)
+  // ----------------------------------------------------------------
+
+  var deferredInstallPrompt = null;
+
+  function isStandalone() {
+    return !!(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+  }
+
+  window.addEventListener("beforeinstallprompt", function (event) {
+    event.preventDefault(); // offer our own button instead of the mini-infobar
+    deferredInstallPrompt = event;
+    if (!isStandalone()) {
+      btnInstall.classList.remove("hidden");
+    }
+  });
+
+  window.addEventListener("appinstalled", function () {
+    deferredInstallPrompt = null;
+    btnInstall.classList.add("hidden");
+  });
+
+  btnInstall.addEventListener("click", function () {
+    if (!deferredInstallPrompt) {
+      return;
+    }
+    var promptEvent = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    btnInstall.classList.add("hidden");
+    var shown = promptEvent.prompt();
+    if (shown && shown.catch) {
+      shown.catch(function () {}); // already used / dismissed: nothing to do
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // Wiring
+  // ----------------------------------------------------------------
 
   btnGoManual.addEventListener("click", goToManual);
   btnManualBack.addEventListener("click", goToStart);
   btnManualSearch.addEventListener("click", manualSearch);
   btnManualPreview.addEventListener("click", manualPreview);
   btnManualApply.addEventListener("click", manualApply);
-  manualTitle.addEventListener("input", invalidatePreview);
+  btnLastTitle.addEventListener("click", useLastTitle);
+  manualTitle.addEventListener("input", function () {
+    invalidatePreview();
+    refreshLastTitleChip();
+  });
   manualHighlights.addEventListener("input", invalidatePreview);
   manualPhysical.addEventListener("change", invalidatePreview);
 
-  btnStart.addEventListener("click", startPipeline);
+  btnStart.addEventListener("click", startPipelineByUser);
+  btnCancelAutoStart.addEventListener("click", clearAutoStart);
   btnRestart.addEventListener("click", goToStart);
   btnRetry.addEventListener("click", goToStart);
   btn2fa.addEventListener("click", submit2FA);
@@ -956,12 +1448,40 @@
 
   inputBooks.addEventListener("keydown", function (event) {
     if (event.key === "Enter") {
-      startPipeline();
+      startPipelineByUser();
     }
   });
 
   btnSaveSettings.addEventListener("click", saveSettings);
 
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+    if (autoStartPending) {
+      acquireWakeLock(); // released by the browser while the app was hidden
+    }
+    // Android throttles timers in hidden apps, so a wake-up wait would only
+    // resume at the next (late) poll. Check right away instead.
+    if (settings.apiBase && !backendReady) {
+      checkBackendHealth();
+    }
+  });
+
+  var launch = consumeLaunchParams();
   loadSettingsForm();
+  if (launch.share) {
+    openManualFromShare(launch.share);
+  } else if (launch.action === "manual") {
+    goToManual();
+  } else if (launch.action === "sync") {
+    requestAutoStart();
+  }
   checkBackendHealth();
+
+  if ("serviceWorker" in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register("/sw.js").catch(function () {
+      // Not installable without it, but the page itself works the same.
+    });
+  }
 })();
