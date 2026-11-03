@@ -4,19 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Kindle Highlights Sync</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260823b">
+  <meta name="theme-color" content="#0ea5e9">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css?v=20261103">
 </head>
 <body>
   <div class="container">
+    <!-- Outside the screens on purpose: a share or shortcut launch can open
+         straight into the manual screen, which needs the wake-up status too. -->
+    <div id="backend-banner" class="result-box banner hidden"></div>
+
     <div id="screen-start" class="screen active">
       <div class="card">
         <div class="card-header">
           <span class="badge">KINDLE SYNC</span>
           <h1>Kindle ハイライト同期</h1>
           <p class="subtitle">Kindle のハイライトをNotionとNotebookLMに保存します。</p>
+          <p id="last-run" class="last-run hidden"></p>
         </div>
         <div class="card-body">
-          <div id="backend-banner" class="result-box hidden"></div>
+          <div id="auto-start-note" class="auto-start hidden">
+            <p id="auto-start-text"></p>
+            <button id="btn-cancel-auto-start" class="btn-link" type="button">自動開始をやめる</button>
+          </div>
           <label for="max-books">取得する書籍数</label>
           <input id="max-books" type="number" min="1" placeholder="空欄ですべて取得" inputmode="numeric">
           <p class="helper">空欄のまま開始すると、すべての書籍を対象に処理します。</p>
@@ -27,6 +38,7 @@
           <p class="helper">Notion 側でページを手動削除して復活させたいときにオンにします（処理は少し遅くなります）。</p>
           <button id="btn-start" class="btn-primary">同期を開始</button>
           <button id="btn-go-manual" class="btn-secondary">紙の本のハイライトを手動で追加</button>
+          <button id="btn-install" class="btn-secondary hidden" type="button">スマホにアプリとしてインストール</button>
 
           <details id="connection-settings" class="settings">
             <summary>接続設定（別サーバーのバックエンドを使う場合）</summary>
@@ -38,6 +50,15 @@
             <input id="api-pass" type="password" autocomplete="current-password">
             <button id="btn-save-settings" class="btn-secondary">接続設定を保存</button>
             <p class="helper" id="settings-status"></p>
+          </details>
+
+          <details id="app-tips" class="settings">
+            <summary>スマホのアプリとして使う（Android）</summary>
+            <ol class="tips">
+              <li>Android の Chrome でこのページを開き、「スマホにアプリとしてインストール」を押します（ボタンが出ないときは Chrome のメニュー ⋮ →「アプリをインストール」または「ホーム画面に追加」）。</li>
+              <li>ホーム画面のアイコンを長押しすると「Kindle同期」「手動で追加」が出ます。そのままホーム画面へドラッグして置けば、1 タップで同期を始められます。</li>
+              <li>Google レンズや PDF リーダーで選んだ文章は、「共有」→「ハイライト」でこのアプリに送ると、手動追加の画面に入力された状態で開きます。</li>
+            </ol>
           </details>
         </div>
       </div>
@@ -51,8 +72,10 @@
           <p class="subtitle">Kindle にない本（紙の本・他ストアの電子書籍など）のハイライトを、同じNotion / NotebookLMに登録します。</p>
         </div>
         <div class="card-body">
+          <p id="share-note" class="helper share-note hidden"></p>
           <label for="manual-title">本のタイトル</label>
           <input id="manual-title" type="text" placeholder="例: ファスト&スロー" autocomplete="off">
+          <button id="btn-last-title" class="chip hidden" type="button"></button>
           <button id="btn-manual-search" class="btn-secondary">既存の本を検索（この本ですか？）</button>
           <div id="manual-matches" class="match-list"></div>
 
@@ -106,6 +129,7 @@
             <div class="progress-track"><div class="progress-bar" id="bar-sheets"></div></div>
             <p class="phase-status" id="status-sheets"></p>
           </div>
+          <p class="helper">処理はサーバー側で進むので、この画面を閉じても止まりません（開き直すと進捗を再表示します）。2 段階認証を求められたときだけ、5 分以内にこの画面でコードを入力してください。</p>
         </div>
         <div class="status-bar" id="global-status">ログインを待っています...</div>
       </div>
@@ -154,6 +178,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260823b"></script>
+  <script src="/static/app.js?v=20261103"></script>
 </body>
 </html>

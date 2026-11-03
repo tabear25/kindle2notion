@@ -1,5 +1,6 @@
 import json
 import os
+import posixpath
 import threading
 import time
 
@@ -40,6 +41,34 @@ def _parse_max_books(value):
 # app (same origin) and by Vercel (cross origin against the deployed API).
 FRONTEND_DIR = BASE_DIR / "frontend"
 
+# Installable-app (PWA) files that live at the frontend root rather than under
+# /static: the service worker must be served from "/" to control the whole UI,
+# and Vercel serves frontend/ at "/". Path -> (file, mimetype).
+PWA_ROOT_FILES = {
+    "/sw.js": ("sw.js", "text/javascript"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+}
+PWA_ICON_PREFIX = "/static/icons/"
+
+
+def _is_public_path(path):
+    """Paths answered without Basic auth.
+
+    ``/healthz`` is the unauthenticated liveness probe. The PWA files are
+    static and secret-free, and browsers fetch the manifest without
+    credentials unless the page opts in — behind Basic auth it would get a
+    401 and the UI would silently stop being installable. The icons and the
+    service worker it points to are exempted with it rather than relying on
+    how each browser-initiated fetch carries credentials.
+
+    The icon prefix only matches an already-normalised path: the static route
+    resolves dot segments itself, so "/static/icons/../app.js" would otherwise
+    ride the exemption out of the icons folder.
+    """
+    if path == "/healthz" or path in PWA_ROOT_FILES:
+        return True
+    return path.startswith(PWA_ICON_PREFIX) and posixpath.normpath(path) == path
+
 
 def create_app():
     load_env_file()
@@ -68,7 +97,7 @@ def create_app():
             # CORS preflights never carry Authorization; web/cors.py answers
             # them (or Flask's default OPTIONS response does).
             return None
-        if request.path == "/healthz":
+        if _is_public_path(request.path):
             return None
         if not auth_enabled:
             return None
@@ -88,6 +117,21 @@ def create_app():
     @app.route("/")
     def index():
         return send_from_directory(str(FRONTEND_DIR), "index.html")
+
+    def _send_pwa_root_file(path):
+        filename, mimetype = PWA_ROOT_FILES[path]
+        response = send_from_directory(str(FRONTEND_DIR), filename, mimetype=mimetype)
+        # Always revalidate, so a redeploy reaches installed apps promptly.
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.route("/sw.js")
+    def service_worker():
+        return _send_pwa_root_file("/sw.js")
+
+    @app.route("/manifest.webmanifest")
+    def web_manifest():
+        return _send_pwa_root_file("/manifest.webmanifest")
 
     @app.route("/healthz")
     def healthz():

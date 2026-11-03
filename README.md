@@ -18,6 +18,8 @@ Kindleのハイライトを取得し、Notion データベースへ保存する�
 - Google スプレッドシート（NotebookLM 用の 99 ボリューム＋索引＝固定 100 ファイル、`k2n_index` / `k2n_vol_*`）へ**取得と同時に自動反映**
 - 物理本・他ストアの電子書籍のハイライトを手動追加（`add_manual_highlights.py`、同じ 100 ファイルへ反映）
 - Web UI フォーム・HTTP API・Cloud CLI からスマホや外出先で手動ハイライト追加
+- **Android にアプリとしてインストール（PWA）**: ホーム画面から 1 タップで同期、他アプリの「共有」からハイライト追加
+  - 詳細: [`docs/ANDROID_APP.md`](docs/ANDROID_APP.md)
 - 実行履歴の記録（`GET /api/runs`）
 
 ## 前提条件
